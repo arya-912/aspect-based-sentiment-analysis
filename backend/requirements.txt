@@ -1,0 +1,8 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+
+# torch / transformers / pandas come from the training requirements and are
+# already present in the project venv; the backend imports the trained model
+# through training/src/artifact.py rather than vendoring its own copy.

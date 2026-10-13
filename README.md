@@ -30,7 +30,15 @@ absa-project/
 │   ├── notebooks/          data exploration
 │   ├── tests/              pytest suite
 │   └── train.py            CLI: prepare | train | evaluate
-├── backend/             (not started)
+├── backend/             FastAPI inference service
+│   ├── app/
+│   │   ├── main.py         app factory, lifespan, CORS
+│   │   ├── core/           config.py (Settings), errors.py (handlers)
+│   │   ├── schemas/        request.py, response.py
+│   │   ├── services/       model_registry.py, predictor.py
+│   │   └── routes/         sentiment.py — predict | health | model
+│   ├── tests/              39 tests, no artifact needed
+│   └── requirements.txt
 └── frontend/            (not started)
 ```
 
@@ -320,7 +328,36 @@ under-represented, and most of its errors go to `negative`. These are
 short smoke runs at `max_length=64`; the default config (4 epochs,
 `max_length=128`) should be run before drawing conclusions.
 
+## Serving
+
+The backend wraps a trained artifact behind three endpoints:
+
+```bash
+pip install -r backend/requirements.txt
+cd backend && uvicorn app.main:app --reload --port 8000
+```
+
+```
+POST /api/v1/predict   {"text": "...", "aspect": "..."}
+GET  /api/v1/health
+GET  /api/v1/model
+```
+
+```console
+$ curl -s -X POST localhost:8000/api/v1/predict \
+    -H 'Content-Type: application/json' \
+    -d '{"text":"The battery life is great but the screen is dim.","aspect":"screen"}'
+{"aspect":"screen","sentiment":"negative","confidence":0.9112,"model_version":"absa-v1"}
+```
+
+It imports the training package rather than vendoring a copy of the
+architecture, so the serving path cannot drift from what was trained. If the
+artifact is missing the service still boots and reports
+`{"status":"degraded","model_loaded":false}` on `/health`, with `/predict`
+answering 503 — easier to diagnose than a crash-looping container. See
+[`backend/README.md`](backend/README.md) for the full design notes.
+
 ## Next
 
-`backend/` and `frontend/` are intentionally empty — the training package and
-its artifact format are the foundation they will build on.
+`frontend/` is intentionally empty. The artifact format and the API above are
+the foundation it will build on.

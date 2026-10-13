@@ -16,6 +16,9 @@ training/data/processed/
 training/artifacts/
 training/experiments/runs/
 
+# Backend
+backend/.env
+
 # Node / frontend
 node_modules/
 frontend/dist/
