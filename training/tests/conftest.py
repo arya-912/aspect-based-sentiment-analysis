@@ -7,12 +7,25 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import torch
 
 TRAINING_ROOT = Path(__file__).resolve().parents[1]
 if str(TRAINING_ROOT) not in sys.path:
     sys.path.insert(0, str(TRAINING_ROOT))
 
 RAW_DIR = TRAINING_ROOT / "data" / "raw"
+
+#: A tiny randomly-initialised BERT. Keeps every model test on CPU, offline
+#: and fast -- the architecture under test is the attention and the head, not
+#: the pretrained weights.
+TINY_ENCODER_KWARGS = dict(
+    vocab_size=256,
+    hidden_size=32,
+    num_hidden_layers=2,
+    num_attention_heads=2,
+    intermediate_size=37,
+    max_position_embeddings=64,
+)
 
 
 @pytest.fixture(scope="session")
@@ -58,3 +71,81 @@ def toy_frame(toy_csv: Path) -> pd.DataFrame:
     from src.data.dataset import load_raw_csv
 
     return load_raw_csv(toy_csv)
+
+
+@pytest.fixture(scope="session")
+def tiny_backbone():
+    """A fresh tiny BertModel, built from config -- no download."""
+    from transformers import BertConfig, BertModel
+
+    def factory():
+        torch.manual_seed(0)
+        return BertModel(BertConfig(**TINY_ENCODER_KWARGS))
+
+    return factory
+
+
+@pytest.fixture
+def tiny_model(tiny_backbone):
+    """A :class:`BertAspectAttention` over the tiny encoder."""
+    from src.models.absa_model import BertAspectAttention
+
+    torch.manual_seed(0)
+    return BertAspectAttention(
+        model_name="tiny-bert-test", num_labels=3, dropout=0.1, encoder=tiny_backbone()
+    )
+
+
+@pytest.fixture
+def random_batch():
+    """A collated batch with realistic, disjoint segment masks."""
+
+    def factory(batch_size: int = 4, seq_len: int = 16, with_labels: bool = True):
+        torch.manual_seed(1)
+        aspect_mask = torch.zeros(batch_size, seq_len, dtype=torch.bool)
+        context_mask = torch.zeros(batch_size, seq_len, dtype=torch.bool)
+        # [CLS] context... [SEP] aspect [SEP]
+        context_mask[:, 1 : seq_len - 4] = True
+        aspect_mask[:, seq_len - 3 : seq_len - 1] = True
+        token_type_ids = torch.zeros(batch_size, seq_len, dtype=torch.long)
+        token_type_ids[:, seq_len - 4 :] = 1
+
+        batch = {
+            "input_ids": torch.randint(0, 256, (batch_size, seq_len)),
+            "attention_mask": torch.ones(batch_size, seq_len, dtype=torch.long),
+            "token_type_ids": token_type_ids,
+            "aspect_mask": aspect_mask,
+            "context_mask": context_mask,
+        }
+        if with_labels:
+            batch["labels"] = torch.randint(0, 3, (batch_size,))
+        return batch
+
+    return factory
+
+
+@pytest.fixture
+def tiny_encoder(tmp_path):
+    """An ABSAEncoder over a minimal hand-built WordPiece tokenizer.
+
+    Keeps the artifact tests offline: ``build_artifact`` saves whatever
+    tokenizer it is given, and ``load_artifact`` must read it back.
+    """
+    from transformers import BertTokenizerFast
+
+    from src.preprocessing.tokenizer import ABSAEncoder
+
+    vocab = [
+        "[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]",
+        "the", "screen", "is", "bright", "keyboard", "nice",
+        "battery", "life", "price", "software", "fan", "loud", "and", "but",
+        "short", "fine", "came", "with", "usual", "cooling", "great", "it",
+    ]
+    vocab_file = tmp_path / "vocab.txt"
+    vocab_file.write_text("\n".join(vocab) + "\n", encoding="utf-8")
+
+    tokenizer_dir = tmp_path / "tiny-tokenizer"
+    BertTokenizerFast(vocab_file=str(vocab_file), do_lower_case=True).save_pretrained(
+        tokenizer_dir
+    )
+    return ABSAEncoder(str(tokenizer_dir), max_length=24)

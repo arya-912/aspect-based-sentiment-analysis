@@ -1,9 +1,8 @@
-"""Metric computation and inference loops."""
+"""Metric computation for aspect-based sentiment predictions."""
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 import numpy as np
@@ -15,52 +14,15 @@ from sklearn.metrics import (
     f1_score,
     precision_recall_fscore_support,
 )
-from torch.utils.data import DataLoader
 
 LOGGER = logging.getLogger(__name__)
 
 
-@dataclass
-class EvalResult:
-    """Metrics plus the raw predictions they were computed from."""
-
-    loss: float | None
-    accuracy: float
-    macro_f1: float
-    weighted_f1: float
-    per_class: dict[str, dict[str, float]]
-    confusion_matrix: list[list[int]]
-    labels: tuple[str, ...]
-    y_true: list[int] = field(default_factory=list)
-    y_pred: list[int] = field(default_factory=list)
-    probabilities: list[list[float]] = field(default_factory=list)
-
-    def summary(self) -> dict[str, float]:
-        """The scalars worth logging each epoch."""
-        out = {
-            "accuracy": self.accuracy,
-            "macro_f1": self.macro_f1,
-            "weighted_f1": self.weighted_f1,
-        }
-        if self.loss is not None:
-            out["loss"] = self.loss
-        return out
-
-    def to_dict(self, include_predictions: bool = False) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "loss": self.loss,
-            "accuracy": self.accuracy,
-            "macro_f1": self.macro_f1,
-            "weighted_f1": self.weighted_f1,
-            "per_class": self.per_class,
-            "confusion_matrix": self.confusion_matrix,
-            "labels": list(self.labels),
-        }
-        if include_predictions:
-            payload["y_true"] = self.y_true
-            payload["y_pred"] = self.y_pred
-            payload["probabilities"] = self.probabilities
-        return payload
+def _label_names(label_map, num_classes: int) -> list[str]:
+    """Label names from a LabelMap, falling back to stringified class ids."""
+    if label_map is not None:
+        return list(label_map.labels)
+    return [str(i) for i in range(num_classes)]
 
 
 def compute_metrics(
@@ -68,9 +30,23 @@ def compute_metrics(
     y_pred: Sequence[int],
     labels: Sequence[str],
     loss: float | None = None,
-    probabilities: Sequence[Sequence[float]] | None = None,
-) -> EvalResult:
-    """Accuracy, macro/weighted F1, per-class P/R/F1 and a confusion matrix."""
+    split: str = "unknown",
+) -> dict[str, Any]:
+    """Score predictions against gold labels.
+
+    Args:
+        y_true: gold class ids.
+        y_pred: predicted class ids.
+        labels: label names, indexed by class id.
+        loss: mean loss to include in the report, when known.
+        split: name recorded as ``evaluation_split``.
+
+    Returns:
+        ``accuracy``, ``macro_f1``, ``weighted_f1``, ``per_class``,
+        ``confusion_matrix``, ``n``, ``evaluation_split`` and, when given,
+        ``loss``. Every class appears in ``per_class`` even with zero support,
+        so the shape of the report does not depend on what the model predicted.
+    """
     y_true = [int(v) for v in y_true]
     y_pred = [int(v) for v in y_pred]
     if len(y_true) != len(y_pred):
@@ -84,30 +60,121 @@ def compute_metrics(
     precision, recall, f1, support = precision_recall_fscore_support(
         y_true, y_pred, labels=class_ids, zero_division=0
     )
-    per_class = {
-        labels[i]: {
-            "precision": float(precision[i]),
-            "recall": float(recall[i]),
-            "f1": float(f1[i]),
-            "support": int(support[i]),
-        }
-        for i in class_ids
-    }
 
-    return EvalResult(
-        loss=None if loss is None else float(loss),
-        accuracy=float(accuracy_score(y_true, y_pred)),
-        macro_f1=float(f1_score(y_true, y_pred, labels=class_ids, average="macro", zero_division=0)),
-        weighted_f1=float(
+    metrics: dict[str, Any] = {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "macro_f1": float(
+            f1_score(y_true, y_pred, labels=class_ids, average="macro", zero_division=0)
+        ),
+        "weighted_f1": float(
             f1_score(y_true, y_pred, labels=class_ids, average="weighted", zero_division=0)
         ),
-        per_class=per_class,
-        confusion_matrix=confusion_matrix(y_true, y_pred, labels=class_ids).tolist(),
-        labels=tuple(labels),
-        y_true=y_true,
-        y_pred=y_pred,
-        probabilities=[[float(p) for p in row] for row in (probabilities or [])],
+        "per_class": {
+            labels[i]: {
+                "precision": float(precision[i]),
+                "recall": float(recall[i]),
+                "f1": float(f1[i]),
+                "support": int(support[i]),
+            }
+            for i in class_ids
+        },
+        "confusion_matrix": confusion_matrix(y_true, y_pred, labels=class_ids).tolist(),
+        "n": len(y_true),
+        "evaluation_split": split,
+    }
+    if loss is not None:
+        metrics["loss"] = float(loss)
+    return metrics
+
+
+@torch.no_grad()
+def predict(
+    model: torch.nn.Module,
+    dataloader,
+    device: torch.device | str = "cpu",
+) -> dict[str, Any]:
+    """Run inference over a dataloader.
+
+    Returns ``{"probabilities", "y_pred", "y_true", "loss", "attention"}``.
+    ``y_true`` and ``loss`` are ``None`` for unlabelled batches.
+    """
+    model.eval()
+    model.to(device)
+
+    probs_chunks: list[np.ndarray] = []
+    true_chunks: list[np.ndarray] = []
+    total_loss, n_batches = 0.0, 0
+
+    for batch in dataloader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        labels = batch.pop("labels", None)
+        output = model(**batch, labels=labels)
+
+        probs_chunks.append(torch.softmax(output["logits"].float(), dim=-1).cpu().numpy())
+        if labels is not None:
+            true_chunks.append(labels.cpu().numpy())
+            total_loss += float(output["loss"])
+            n_batches += 1
+
+    if not probs_chunks:
+        raise ValueError("dataloader yielded no batches")
+
+    probabilities = np.concatenate(probs_chunks, axis=0)
+    return {
+        "probabilities": probabilities,
+        "y_pred": probabilities.argmax(axis=1),
+        "y_true": np.concatenate(true_chunks, axis=0) if true_chunks else None,
+        "loss": (total_loss / n_batches) if n_batches else None,
+    }
+
+
+def evaluate(
+    model: torch.nn.Module,
+    dataloader,
+    device: torch.device | str = "cpu",
+    label_map=None,
+    split: str = "test",
+) -> dict[str, Any]:
+    """Score a labelled dataloader end to end.
+
+    Args:
+        model: a :class:`BertAspectAttention` (or anything with the same
+            forward contract).
+        dataloader: yields collated batches including ``labels``.
+        device: where to run.
+        label_map: optional :class:`LabelMap`, used to name the classes.
+        split: recorded as ``evaluation_split``.
+
+    Returns:
+        The dict described by :func:`compute_metrics`.
+    """
+    outputs = predict(model, dataloader, device)
+    if outputs["y_true"] is None:
+        raise ValueError(
+            "evaluate() needs labelled batches; use predict() for unlabelled data"
+        )
+
+    labels = _label_names(label_map, outputs["probabilities"].shape[1])
+    metrics = compute_metrics(
+        outputs["y_true"],
+        outputs["y_pred"],
+        labels,
+        loss=outputs["loss"],
+        split=split,
     )
+    LOGGER.info(
+        "%s: n=%d acc=%.4f macro_f1=%.4f",
+        split,
+        metrics["n"],
+        metrics["accuracy"],
+        metrics["macro_f1"],
+    )
+    return metrics
+
+
+def per_class_f1(metrics: dict[str, Any]) -> dict[str, float]:
+    """Just the F1 per label, as the trainer records each epoch."""
+    return {name: scores["f1"] for name, scores in metrics["per_class"].items()}
 
 
 def sklearn_text_report(
@@ -122,80 +189,3 @@ def sklearn_text_report(
         zero_division=0,
         digits=4,
     )
-
-
-@torch.no_grad()
-def predict(
-    model: torch.nn.Module,
-    dataloader: DataLoader,
-    device: torch.device | str = "cpu",
-    loss_fn: torch.nn.Module | None = None,
-) -> tuple[np.ndarray, np.ndarray | None, float | None]:
-    """Run inference over a loader.
-
-    Returns ``(probabilities, y_true, mean_loss)``. The last two are ``None``
-    when the loader yields unlabelled batches.
-    """
-    model.eval()
-    model.to(device)
-
-    all_probs: list[np.ndarray] = []
-    all_true: list[np.ndarray] = []
-    total_loss, n_batches = 0.0, 0
-
-    for batch in dataloader:
-        batch = {k: v.to(device) for k, v in batch.items()}
-        labels = batch.pop("labels", None)
-        output = model(**batch, labels=labels, loss_fn=loss_fn)
-
-        all_probs.append(torch.softmax(output["logits"].float(), dim=-1).cpu().numpy())
-        if labels is not None:
-            all_true.append(labels.cpu().numpy())
-            total_loss += float(output["loss"])
-            n_batches += 1
-
-    if not all_probs:
-        raise ValueError("dataloader yielded no batches")
-
-    probs = np.concatenate(all_probs, axis=0)
-    y_true = np.concatenate(all_true, axis=0) if all_true else None
-    mean_loss = (total_loss / n_batches) if n_batches else None
-    return probs, y_true, mean_loss
-
-
-def evaluate(
-    model: torch.nn.Module,
-    dataloader: DataLoader,
-    labels: Sequence[str],
-    device: torch.device | str = "cpu",
-    loss_fn: torch.nn.Module | None = None,
-) -> EvalResult:
-    """Score a labelled dataloader end to end."""
-    probs, y_true, mean_loss = predict(model, dataloader, device, loss_fn)
-    if y_true is None:
-        raise ValueError("evaluate() needs labelled batches; use predict() instead")
-    y_pred = probs.argmax(axis=1)
-    return compute_metrics(y_true, y_pred, labels, mean_loss, probs.tolist())
-
-
-def error_analysis(result: EvalResult, texts: Sequence[str], aspects: Sequence[str], limit: int = 25) -> list[dict[str, Any]]:
-    """The most confident mistakes, highest-confidence first."""
-    rows: list[dict[str, Any]] = []
-    for idx, (gold, pred) in enumerate(zip(result.y_true, result.y_pred)):
-        if gold == pred:
-            continue
-        confidence = (
-            max(result.probabilities[idx]) if idx < len(result.probabilities) else float("nan")
-        )
-        rows.append(
-            {
-                "index": idx,
-                "text": texts[idx] if idx < len(texts) else None,
-                "aspect": aspects[idx] if idx < len(aspects) else None,
-                "gold": result.labels[gold],
-                "predicted": result.labels[pred],
-                "confidence": confidence,
-            }
-        )
-    rows.sort(key=lambda r: (-r["confidence"] if r["confidence"] == r["confidence"] else 0))
-    return rows[:limit]

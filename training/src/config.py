@@ -1,149 +1,188 @@
-"""Typed, YAML-backed configuration for an ABSA training run."""
+"""Loading and validating the YAML training config.
+
+The config is a plain nested dict rather than a dataclass tree: it is written
+verbatim into every artifact's ``config.json``, so keeping it as data means an
+artifact records exactly what produced it, with no schema to keep in sync.
+"""
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, fields, is_dataclass
+import copy
+import logging
 from pathlib import Path
-from typing import Any, get_type_hints
+from typing import Any
 
 import yaml
 
+LOGGER = logging.getLogger(__name__)
+
+#: Repository root: this file is <root>/training/src/config.py.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-TRAINING_ROOT = PROJECT_ROOT / "training"
+
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "training" / "configs" / "default.yaml"
+
+#: Dotted keys every config must define.
+REQUIRED_KEYS = (
+    "seed",
+    "model.name",
+    "model.max_length",
+    "model.num_labels",
+    "training.epochs",
+    "training.batch_size",
+    "training.lr",
+    "training.val_fraction",
+    "paths.raw_train",
+    "paths.official_test",
+    "paths.processed_dir",
+    "paths.artifacts_dir",
+    "artifact.version",
+)
 
 
-@dataclass
-class DataConfig:
-    """Where the corpus lives and how it is split."""
-
-    train_csv: str = "data/raw/Laptop_Train_v2.csv"
-    test_csv: str = "data/raw/Laptops_Test_Gold.csv"
-    splits_dir: str = "data/processed/splits"
-    labels: tuple[str, ...] = ("negative", "neutral", "positive")
-    val_fraction: float = 0.1
-    seed: int = 42
-    save_splits: bool = True
+def get(cfg: dict[str, Any], dotted: str, default: Any = None) -> Any:
+    """Read a nested value by dotted key, e.g. ``get(cfg, "model.name")``."""
+    cursor: Any = cfg
+    for part in dotted.split("."):
+        if not isinstance(cursor, dict) or part not in cursor:
+            return default
+        cursor = cursor[part]
+    return cursor
 
 
-@dataclass
-class ModelConfig:
-    """Backbone and classification head."""
-
-    model_name: str = "bert-base-uncased"
-    max_length: int = 128
-    dropout: float = 0.1
-    pooling: str = "aspect_context"  # cls | aspect | aspect_context
-    freeze_encoder: bool = False
-    hidden_dim: int | None = None  # None -> straight linear head
-
-
-@dataclass
-class TrainConfig:
-    """Optimisation schedule."""
-
-    epochs: int = 4
-    batch_size: int = 32
-    eval_batch_size: int = 64
-    learning_rate: float = 2e-5
-    head_learning_rate: float = 1e-4
-    weight_decay: float = 0.01
-    warmup_ratio: float = 0.1
-    max_grad_norm: float = 1.0
-    label_smoothing: float = 0.0
-    class_weighting: bool = True
-    num_workers: int = 0
-    device: str = "auto"  # auto | cpu | cuda | mps
-    seed: int = 42
-    early_stopping_patience: int = 0  # 0 disables
-    monitor: str = "macro_f1"  # metric used to pick the best checkpoint
+def set_in(cfg: dict[str, Any], dotted: str, value: Any) -> None:
+    """Write a nested value by dotted key, creating sections as needed."""
+    cursor = cfg
+    *parents, leaf = dotted.split(".")
+    for part in parents:
+        cursor = cursor.setdefault(part, {})
+        if not isinstance(cursor, dict):
+            raise TypeError(f"{dotted}: '{part}' is not a section")
+    cursor[leaf] = value
 
 
-@dataclass
-class ExperimentConfig:
-    """Everything one run needs."""
-
-    name: str = "absa-laptops"
-    artifacts_dir: str = "artifacts"
-    data: DataConfig = field(default_factory=DataConfig)
-    model: ModelConfig = field(default_factory=ModelConfig)
-    train: TrainConfig = field(default_factory=TrainConfig)
-
-    # ---- paths -------------------------------------------------------- #
-
-    def resolve(self, relative: str | Path) -> Path:
-        """Resolve a config path against ``training/`` unless already absolute."""
-        path = Path(relative)
-        return path if path.is_absolute() else (TRAINING_ROOT / path)
-
-    @property
-    def run_dir(self) -> Path:
-        return self.resolve(self.artifacts_dir) / self.name
-
-    # ---- (de)serialisation -------------------------------------------- #
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, raw: dict[str, Any] | None) -> "ExperimentConfig":
-        return _build(cls, raw or {})
-
-    @classmethod
-    def load(cls, path: str | Path) -> "ExperimentConfig":
-        path = Path(path)
-        if not path.is_file():
-            raise FileNotFoundError(f"no such config file: {path}")
-        with path.open(encoding="utf-8") as handle:
-            return cls.from_dict(yaml.safe_load(handle))
-
-    def save(self, path: str | Path) -> Path:
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as handle:
-            yaml.safe_dump(self.to_dict(), handle, sort_keys=False)
-        return path
-
-    def with_overrides(self, overrides: dict[str, Any]) -> "ExperimentConfig":
-        """Return a copy updated from dotted keys, e.g. ``train.epochs=2``."""
-        merged = self.to_dict()
-        for dotted, value in overrides.items():
-            cursor: Any = merged
-            *parents, leaf = dotted.split(".")
-            for part in parents:
-                if part not in cursor:
-                    raise KeyError(f"unknown config section {part!r} in {dotted!r}")
-                cursor = cursor[part]
-            if leaf not in cursor:
-                raise KeyError(f"unknown config key {dotted!r}")
-            cursor[leaf] = value
-        return ExperimentConfig.from_dict(merged)
+#: Dotted keys coerced to a number after loading, with their target type.
+#: PyYAML only parses a float when it sees both a dot and a signed exponent,
+#: so the perfectly reasonable ``lr: 3e-5`` loads as the *string* "3e-5" and
+#: would otherwise reach AdamW untouched and fail far from the cause.
+NUMERIC_KEYS: dict[str, type] = {
+    "seed": int,
+    "model.max_length": int,
+    "model.num_labels": int,
+    "model.dropout": float,
+    "training.epochs": int,
+    "training.batch_size": int,
+    "training.lr": float,
+    "training.weight_decay": float,
+    "training.warmup_ratio": float,
+    "training.max_grad_norm": float,
+    "training.val_fraction": float,
+    "optim.head_lr": float,
+    "optim.eval_batch_size": int,
+    "optim.num_workers": int,
+}
 
 
-def _build(target: type, raw: Any) -> Any:
-    """Recursively instantiate nested dataclasses from plain dicts."""
-    if not is_dataclass(target):
-        return raw
-    if not isinstance(raw, dict):
-        raise TypeError(f"expected a mapping for {target.__name__}, got {type(raw)}")
-
-    known = {f.name for f in fields(target)}
-    unknown = sorted(set(raw) - known)
-    if unknown:
-        raise KeyError(f"unknown key(s) for {target.__name__}: {unknown}")
-
-    # Resolved, because `from __future__ import annotations` stringifies types.
-    hints = get_type_hints(target)
-
-    kwargs: dict[str, Any] = {}
-    for name in known:
-        if name not in raw:
+def coerce_numeric(cfg: dict[str, Any]) -> None:
+    """Coerce the keys in :data:`NUMERIC_KEYS` in place."""
+    for dotted, caster in NUMERIC_KEYS.items():
+        value = get(cfg, dotted, None)
+        if value is None or isinstance(value, bool):
             continue
-        value = raw[name]
-        hint = hints.get(name)
-        if is_dataclass(hint):
-            kwargs[name] = _build(hint, value)
-        elif name == "labels" and isinstance(value, (list, tuple)):
-            kwargs[name] = tuple(value)
-        else:
-            kwargs[name] = value
-    return target(**kwargs)
+        try:
+            set_in(cfg, dotted, caster(value))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"config key {dotted!r} must be a {caster.__name__}, got {value!r}"
+            ) from exc
+
+
+def validate_config(cfg: dict[str, Any]) -> None:
+    """Fail loudly on a config missing keys the pipeline depends on."""
+    missing = [key for key in REQUIRED_KEYS if get(cfg, key, None) is None]
+    if missing:
+        raise KeyError(f"config is missing required key(s): {missing}")
+
+    if not 0.0 < float(get(cfg, "training.val_fraction")) < 1.0:
+        raise ValueError(
+            f"training.val_fraction must be in (0, 1), got "
+            f"{get(cfg, 'training.val_fraction')}"
+        )
+    if int(get(cfg, "training.epochs")) < 1:
+        raise ValueError(f"training.epochs must be >= 1, got {get(cfg, 'training.epochs')}")
+    if int(get(cfg, "model.num_labels")) < 2:
+        raise ValueError(
+            f"model.num_labels must be >= 2, got {get(cfg, 'model.num_labels')}"
+        )
+    labels = get(cfg, "data.labels")
+    if labels is not None and len(labels) != int(get(cfg, "model.num_labels")):
+        raise ValueError(
+            f"model.num_labels ({get(cfg, 'model.num_labels')}) does not match "
+            f"data.labels ({labels})"
+        )
+
+
+def load_config(
+    path: str | Path | None = None, overrides: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Load the YAML config, apply dotted overrides and validate it.
+
+    Args:
+        path: YAML file; defaults to ``training/configs/default.yaml``.
+        overrides: dotted key -> value, applied on top of the file.
+
+    Returns:
+        The resolved config dict.
+    """
+    path = Path(path) if path else DEFAULT_CONFIG_PATH
+    if not path.is_file():
+        raise FileNotFoundError(f"no such config file: {path}")
+
+    with path.open(encoding="utf-8") as handle:
+        cfg = yaml.safe_load(handle) or {}
+    if not isinstance(cfg, dict):
+        raise TypeError(f"{path}: expected a mapping at the top level")
+
+    cfg["config_path"] = str(path)
+    for dotted, value in (overrides or {}).items():
+        if value is not None:
+            set_in(cfg, dotted, value)
+
+    coerce_numeric(cfg)
+    validate_config(cfg)
+    return cfg
+
+
+def resolve_path(cfg: dict[str, Any], dotted: str) -> Path:
+    """Resolve a configured path against the repository root.
+
+    Config paths are written repo-relative (``training/data/raw/...``) so the
+    same file works whether a command is run from the repo root or from
+    ``training/``.
+    """
+    raw = get(cfg, dotted)
+    if raw is None:
+        raise KeyError(f"config has no path at {dotted!r}")
+    path = Path(raw)
+    return path if path.is_absolute() else (PROJECT_ROOT / path)
+
+
+def artifact_dir(cfg: dict[str, Any]) -> Path:
+    """Where this run's artifact belongs: ``<artifacts_dir>/<version>``."""
+    return resolve_path(cfg, "paths.artifacts_dir") / str(get(cfg, "artifact.version"))
+
+
+def describe(cfg: dict[str, Any]) -> str:
+    """One-line summary for the log at the start of a run."""
+    return (
+        f"model={get(cfg, 'model.name')} "
+        f"max_len={get(cfg, 'model.max_length')} "
+        f"epochs={get(cfg, 'training.epochs')} "
+        f"bs={get(cfg, 'training.batch_size')} "
+        f"lr={get(cfg, 'training.lr')} "
+        f"seed={get(cfg, 'seed')}"
+    )
+
+
+def for_artifact(cfg: dict[str, Any]) -> dict[str, Any]:
+    """A copy with repo-relative paths kept intact, for ``config.json``."""
+    return copy.deepcopy(cfg)

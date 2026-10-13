@@ -18,19 +18,18 @@ absa-project/
 │   ├── src/
 │   │   ├── data/           dataset.py — loading, cleaning, splitting
 │   │   ├── preprocessing/  tokenizer.py — sentence-pair encoding + masks
-│   │   ├── models/         absa_model.py — transformer + aspect pooling
+│   │   ├── models/         absa_model.py — BERT + aspect attention
 │   │   ├── evaluation/     evaluate.py (metrics), reporting.py (rendering)
-│   │   ├── config.py       typed, YAML-backed configuration
-│   │   ├── trainer.py      training loop, scheduling, best checkpoint
-│   │   ├── artifact.py     save/load a self-contained run bundle
-│   │   └── experiment.py   end-to-end orchestration
+│   │   ├── config.py       YAML config loading + validation
+│   │   ├── trainer.py      training loop, clipping, best checkpoint
+│   │   └── artifact.py     build/load a self-contained run bundle
 │   ├── data/raw/           the four SemEval CSVs (gitignored)
 │   ├── data/processed/     generated splits (gitignored)
 │   ├── artifacts/          run outputs: weights, metrics, reports (gitignored)
-│   ├── configs/            YAML run definitions
+│   ├── configs/            default.yaml (+ quick.yaml for smoke tests)
 │   ├── notebooks/          data exploration
 │   ├── tests/              pytest suite
-│   └── train.py            CLI entry point
+│   └── train.py            CLI: prepare | train | evaluate
 ├── backend/             (not started)
 └── frontend/            (not started)
 ```
@@ -101,23 +100,48 @@ special-tokens mask:
 
 They are disjoint by construction, and the model pools over them.
 
-## Model
+## Model — `BertAspectAttention`
 
-`ABSAModel` = pretrained encoder → pooled representation → classifier.
-`pooling` chooses what the head sees:
+The sentence-pair encoding hands the model the aspect, but nothing tells it
+*which context words matter for that aspect*. This architecture makes that
+explicit:
 
-| `pooling` | Representation |
-| --- | --- |
-| `cls` | `[CLS]` alone — the plain sentence-pair baseline |
-| `aspect` | mean over the aspect tokens |
-| `aspect_context` | `[CLS] ‖ mean(aspect) ‖ mean(context)` (default) |
+```
+H     = BERT([CLS] text [SEP] aspect [SEP])        (B, T, d)
+a     = mean(H[aspect_mask])                       aspect representation
+e_i   = vᵀ tanh(W_h h_i + W_a a)                   additive attention scores
+alpha = softmax(e)  masked to context_mask         (B, T), zero off-mask
+c     = Σ_i alpha_i h_i                            attended context vector
+logits = MLP([c ; a ; h_CLS])                      3d → d → num_labels
+```
 
-Pooling is masked-mean with a clamped denominator, so a degenerate example
-pools to zeros instead of NaN and cannot poison a batch's gradient.
+So "Battery life is amazing but the screen is dim" can attend to *amazing* for
+`battery life` and *dim* for `screen`, from one shared pass over the sentence.
+`W_a a` does not depend on `i`, so it is computed once and broadcast.
 
-The randomly-initialised head gets a higher learning rate than the pretrained
-encoder (`head_learning_rate` vs `learning_rate`), and biases/LayerNorm weights
-are exempt from weight decay — both standard for transformer fine-tuning.
+The head sees all three of `[c ; a ; h_CLS]`: keeping the `[CLS]` pair summary
+means the model can fall back on it when the attention is uninformative,
+rather than depending on attention alone. The classifier is
+`Dropout → Linear(3d, d) → GELU → Dropout → Linear(d, num_labels)`.
+
+Two numerical details that matter in practice:
+
+- **Masking uses `finfo.min`, not `-inf`.** A row whose `context_mask` is
+  entirely empty would make `softmax` return NaN and poison the whole batch's
+  gradient. With a finite floor the row degrades to uniform, and the weights
+  are then re-zeroed outside the mask so no attention leaks onto padding.
+- **`masked_mean` clamps its denominator**, for the same reason on the aspect
+  side.
+
+Class weights are a non-persistent buffer: they follow `.to(device)` but stay
+out of the `state_dict`, because they describe the *training split's* class
+balance rather than the model. That keeps `load_artifact` a strict, exact load.
+
+The pretrained encoder and the randomly-initialised head get different
+learning rates (`training.lr` vs `optim.head_lr`), biases and LayerNorm
+weights are exempt from weight decay, and the backbone's pooler is excluded
+from the optimizer — this model pools `last_hidden_state` itself, so no
+gradient ever reaches the pooler.
 
 ## Setup
 
@@ -126,53 +150,94 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r training/requirements.txt
 ```
 
-## Training
+## Usage
+
+Three subcommands, each usable on its own:
 
 ```bash
 cd training
 
-python train.py                                  # defaults
-python train.py --config configs/bert_base.yaml  # from YAML
-python train.py --config configs/quick.yaml      # 1 epoch, smoke test
-python train.py --epochs 2 --batch-size 16 --name my-run
-python train.py --pooling cls --name cls-baseline # ablation
-python train.py --dump-config /tmp/resolved.yaml  # inspect, don't train
+python train.py prepare     # clean + split the corpus -> train.csv / val.csv
+python train.py train       # fine-tune, then write the artifact
+python train.py evaluate    # score the saved artifact on the gold test set
 ```
 
-CLI flags override the YAML; anything left unset keeps its config value. Run
-`python train.py --help` for the full list.
+Config comes from `training/configs/default.yaml`. `--config` picks another
+file and per-command flags override individual values:
 
-A run writes to `training/artifacts/<name>/`:
+```bash
+python train.py --config configs/quick.yaml train   # 1 epoch, max_length 64
+python train.py train --epochs 2 --batch-size 32 --version absa-v2
+python train.py train --model-name roberta-base --lr 2e-5
+python train.py evaluate --show-attention           # most-attended tokens
+python train.py evaluate --artifact artifacts/absa-v1 --out-dir /tmp/report
+```
 
-| File | Contents |
+`train` prepares the splits automatically if they are missing; `--prepare`
+forces a re-split. Device is `cuda` when available, else `cpu`; `--device`
+overrides. Config paths are written repo-relative, so every command behaves
+the same whether run from the repo root or from `training/`.
+
+### Config
+
+```yaml
+seed: 42
+model:    {name: bert-base-uncased, max_length: 128, dropout: 0.1, num_labels: 3}
+training: {epochs: 4, batch_size: 16, lr: 3e-5, weight_decay: 0.01,
+           warmup_ratio: 0.1, max_grad_norm: 1.0, val_fraction: 0.1}
+paths:    {raw_train: ..., official_test: ..., processed_dir: ..., artifacts_dir: ...}
+artifact: {version: absa-v1}
+```
+
+The loader coerces numeric keys after parsing. PyYAML only recognises a float
+when it sees *both* a decimal point and a signed exponent, so the entirely
+reasonable `lr: 3e-5` loads as the **string** `"3e-5"` and would otherwise
+reach AdamW untouched and fail a long way from the cause.
+
+### The artifact
+
+A run writes `training/artifacts/<version>/`:
+
+| Entry | Contents |
 | --- | --- |
-| `model.pt` | best checkpoint's state dict |
-| `config.yaml` | the exact resolved config |
-| `metadata.json` | labels, metrics, history, library versions |
-| `tokenizer/` | saved tokenizer, so inference needs no download |
-| `validation.{json,txt,md}` | best-epoch validation report |
-| `test.{json,txt,md}` | official gold-test report |
-| `*_predictions.csv` | per-example gold/predicted/probabilities |
-| `summary.json` | headline numbers |
+| `model.pt` | best checkpoint's `state_dict` (weights only) |
+| `encoder/` | the base transformer's **config** — enough to rebuild the shape |
+| `tokenizer/` | saved tokenizer files |
+| `config.json` | every hyperparameter, plus run id, best epoch, library versions |
+| `label_map.json` | `label2id` / `id2label` |
+| `metrics.json` | accuracy, macro F1, per-class, confusion matrix |
+| `best.pt` | the trainer's running best checkpoint |
+| `validation_metrics.{json,txt,md}` | best-epoch validation report |
 
-The checkpoint kept is the best epoch by `train.monitor` (default `macro_f1`),
-not the last — macro F1 rather than accuracy because `neutral` is the minority
-class and the one the model finds hardest.
+`encoder/` holds the config and **not** a second copy of the weights: every
+weight is already in `model.pt`, so reconstruction is `AutoModel.from_config`
+followed by a strict `load_state_dict`. That makes `load_artifact` work with
+no network and without duplicating ~440MB of parameters — there is a test that
+blocks `socket.connect` for the duration of a load to keep it that way.
+
+The checkpoint kept is the best epoch by **validation macro F1**, not the last
+and not accuracy: `neutral` is the minority class, so accuracy can climb while
+the model quietly gives up on it.
 
 ## Inference
 
-An artifact is self-contained:
+An artifact is self-contained and loads offline:
 
 ```python
-from src.artifact import load_artifact
+from src.artifact import load_artifact, predict_pairs
 
-run = load_artifact("artifacts/bert-base-aspect-context")
+model, encoder, label_map, config = load_artifact("artifacts/absa-v1")
 
-run.predict("Battery life is amazing but the screen is dim.", "screen")
-# {'label': 'negative', 'confidence': 0.91, 'scores': {...}, ...}
-
-run.predict_batch([(sentence, aspect), ...])   # one forward pass
+predict_pairs(model, encoder, label_map, [
+    ("Battery life is amazing but the screen is dim.", "screen"),
+])
+# [{'label': 'negative', 'confidence': 0.91, 'scores': {...},
+#   'attention': [{'token': 'dim', 'weight': 0.31}, ...]}]
 ```
+
+`load_artifact` returns the model already in `eval()` mode. Each prediction
+carries its attention over the context tokens — the main reason this
+architecture is worth its extra parameters, and the thing a UI can show.
 
 This is the seam the `backend/` service will sit on.
 
@@ -182,34 +247,78 @@ This is the seam the `backend/` service will sit on.
 cd training && python -m pytest tests/ -q
 ```
 
-65 tests covering the label map, the CSV quirks above, offset validation,
-split integrity (no sentence leakage, determinism per seed), mask semantics
-(disjoint, no specials or padding, correct multi-word spans), truncation,
-config round-tripping and metric edge cases. Tests needing the corpus or a
-cached tokenizer skip cleanly when either is absent.
+138 tests, all on CPU and all offline. Model and artifact tests run against a
+tiny randomly-initialised BERT (2 layers, hidden size 32) built from a config,
+so nothing is downloaded and the suite finishes in seconds — the architecture
+under test is the attention and the head, not the pretrained weights.
+
+| File | Covers |
+| --- | --- |
+| `test_dataset.py` | `LabelMap`, the CSV quirks above, offset validation, split integrity (no sentence leakage, determinism per seed) |
+| `test_tokenizer.py` | mask shapes and semantics (disjoint, no specials or padding, correct multi-word spans), truncation, empty-aspect/text errors |
+| `test_model.py` | attention normalisation and masking, degenerate rows, backward reach, optimizer groups, metrics |
+| `test_trainer.py` | epoch metrics, gradient clipping, best-checkpoint selection and restore, scheduler stepping, overfitting one batch |
+| `test_artifact.py` | every required file written, exact offline round-trip, each missing entry rejected, config loading |
+
+Tests needing the corpus skip cleanly when it is absent.
+
+Two behaviours are worth calling out, because both are the kind of thing that
+only surfaces end to end:
+
+- **`load_artifact` is offline.** One test patches `socket.connect` to raise
+  for the duration of a load, so a future change that reaches for the hub
+  fails the suite rather than a user's air-gapped machine.
+- **A weighted model must reload.** `nn.CrossEntropyLoss(weight=...)` is itself
+  an `nn.Module`, so assigning it to the model registers it as a submodule and
+  pushes `loss_fn.weight` into the `state_dict`. A model trained *with* class
+  weights then cannot be loaded strictly into one built without them. The
+  unweighted test fixture does not exercise this, so there is an explicit
+  weighted round-trip test.
 
 ## Baseline
 
-One epoch of `bert-base-uncased` with `aspect_context` pooling at
-`max_length=64`, on the official gold test set (638 examples after dropping
+`bert-base-uncased` + aspect attention, `max_length=64`, batch size 16,
+lr 3e-5, on the official gold test set (638 examples after dropping
 `conflict`):
 
-| metric | value |
-| --- | --- |
-| accuracy | 0.7618 |
-| macro F1 | 0.7220 |
-| weighted F1 | 0.7641 |
+| epochs | accuracy | macro F1 | weighted F1 |
+| --- | --- | --- | --- |
+| 1 | 0.7727 | 0.7255 | 0.7697 |
+| 2 | 0.7821 | 0.7447 | 0.7821 |
+
+Per class, after 2 epochs:
 
 | label | precision | recall | f1 | support |
 | --- | --- | --- | --- | --- |
-| negative | 0.5989 | 0.8281 | 0.6951 | 128 |
-| neutral | 0.6419 | 0.5621 | 0.5994 | 169 |
-| positive | 0.9105 | 0.8358 | 0.8716 | 341 |
+| negative | 0.6395 | 0.8594 | 0.7333 | 128 |
+| neutral | 0.6736 | 0.5740 | 0.6198 | 169 |
+| positive | 0.9068 | 0.8563 | 0.8808 | 341 |
 
-`neutral` is clearly the weak class — it is both the vaguest category and
-under-represented, and most of its errors go to `negative`. The default config
-(4 epochs, `max_length=128`) should be run before drawing conclusions; the
-above is a smoke-test baseline, not a tuned result.
+### What the attention learned
+
+`python train.py evaluate --show-attention`, after one epoch — the top-weighted
+context tokens for each aspect:
+
+| aspect | prediction | top attended context tokens |
+| --- | --- | --- |
+| `Boot time` | positive (0.81) | **super** 0.23, is 0.19, **fast** 0.16 |
+| `tech support` | negative (0.62) | **not** 0.15, would 0.12, **fix** 0.06 |
+| `Set up` | positive (0.79) | was 0.51, **easy** 0.37 |
+
+The weights land on the sentiment-bearing words rather than spreading evenly,
+which is the whole reason the attention is there.
+
+One thing that looks like a discrepancy but is not: `evaluate` reports a lower
+loss than the training run did (0.5482 vs 0.6302) while every metric matches to
+four decimals. Training weights the loss by inverse class frequency; a reloaded
+artifact has no class weights, because they describe the training split rather
+than the model and are deliberately not saved. The *metrics* matching exactly is
+what confirms the reload is faithful.
+
+`neutral` remains the weak class — it is both the vaguest category and
+under-represented, and most of its errors go to `negative`. These are
+short smoke runs at `max_length=64`; the default config (4 epochs,
+`max_length=128`) should be run before drawing conclusions.
 
 ## Next
 

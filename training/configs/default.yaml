@@ -1,0 +1,38 @@
+# Default ABSA training run.
+# Paths are relative to the repository root, so these work from anywhere.
+seed: 42
+
+model:
+  name: bert-base-uncased
+  max_length: 128
+  dropout: 0.1
+  num_labels: 3
+
+training:
+  epochs: 4
+  batch_size: 16
+  lr: 3e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  max_grad_norm: 1.0
+  val_fraction: 0.1
+
+paths:
+  raw_train: training/data/raw/Laptop_Train_v2.csv
+  official_test: training/data/raw/Laptops_Test_Gold.csv
+  processed_dir: training/data/processed/splits
+  artifacts_dir: training/artifacts
+
+artifact:
+  version: absa-v1
+
+# Label order defines the class ids: negative=0, neutral=1, positive=2.
+data:
+  labels: [negative, neutral, positive]
+  class_weighting: true
+
+# Head gets a higher LR than the pretrained encoder; null -> use training.lr.
+optim:
+  head_lr: 1.0e-4
+  eval_batch_size: 64
+  num_workers: 0

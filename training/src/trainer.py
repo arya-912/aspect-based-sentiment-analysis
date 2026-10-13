@@ -1,26 +1,23 @@
-"""Training loop with warmup, gradient clipping and best-checkpoint tracking."""
+"""Training loop: per-epoch fit/eval, gradient clipping, best-checkpoint tracking."""
 
 from __future__ import annotations
 
+import copy
 import logging
 import random
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
-from transformers import get_linear_schedule_with_warmup
 
-from .config import TrainConfig
-from .data.dataset import collate_batch
-from .evaluation.evaluate import EvalResult, evaluate
+from .evaluation.evaluate import compute_metrics, per_class_f1
 
 LOGGER = logging.getLogger(__name__)
+
+CHECKPOINT_FILE = "best.pt"
 
 
 def set_seed(seed: int) -> None:
@@ -32,237 +29,239 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def resolve_device(requested: str = "auto") -> torch.device:
-    """Pick a device, honouring an explicit request when it is available."""
-    if requested != "auto":
+def resolve_device(requested: str | torch.device | None = None) -> torch.device:
+    """``cuda`` when available, else ``cpu``; an explicit request wins."""
+    if requested:
         return torch.device(requested)
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-@dataclass
-class TrainingOutcome:
-    """What a finished run leaves behind."""
+class Trainer:
+    """Fine-tunes a :class:`BertAspectAttention` and keeps the best weights.
 
-    best_epoch: int
-    best_metric: float
-    monitor: str
-    history: list[dict[str, Any]] = field(default_factory=list)
-    best_result: EvalResult | None = None
-    best_state_dict: dict[str, torch.Tensor] | None = None
-    seconds: float = 0.0
+    "Best" is the highest **validation macro F1**, not the last epoch and not
+    accuracy: `neutral` is the minority class here, so accuracy can climb while
+    the model quietly gives up on it.
 
-
-class ABSATrainer:
-    """Fine-tunes an :class:`ABSAModel` and keeps the best-scoring weights.
-
-    The best checkpoint is chosen by ``config.monitor`` on the validation
-    split, so the returned weights are not simply the last epoch's.
+    The optimizer and scheduler are supplied by the caller, which keeps the
+    schedule (warmup length, parameter groups) visible at the call site instead
+    of buried in here.
     """
 
     def __init__(
         self,
-        model: nn.Module,
-        config: TrainConfig,
-        labels: tuple[str, ...],
-        class_weights: torch.Tensor | None = None,
-        output_dir: str | Path | None = None,
+        model: torch.nn.Module,
+        train_loader,
+        val_loader,
+        optimizer: torch.optim.Optimizer,
+        scheduler=None,
+        device: str | torch.device = "cpu",
+        config: dict[str, Any] | None = None,
     ) -> None:
         self.model = model
-        self.config = config
-        self.labels = labels
-        self.device = resolve_device(config.device)
-        self.output_dir = Path(output_dir) if output_dir else None
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.device = resolve_device(device)
+        self.config = config or {}
 
-        weights = None
-        if config.class_weighting and class_weights is not None:
-            weights = class_weights.to(self.device)
-            LOGGER.info(
-                "class weights: %s",
-                {l: round(float(w), 3) for l, w in zip(labels, weights)},
-            )
-        self.loss_fn = nn.CrossEntropyLoss(
-            weight=weights, label_smoothing=config.label_smoothing
+        self.max_grad_norm = float(self.config.get("max_grad_norm", 1.0))
+        self.label_map = self.config.get("label_map")
+        self.checkpoint_dir = (
+            Path(self.config["checkpoint_dir"]) if self.config.get("checkpoint_dir") else None
         )
+
+        self.history: list[dict[str, Any]] = []
+        self.best_macro_f1 = -float("inf")
+        self.best_epoch = -1
+        self.best_state: dict[str, torch.Tensor] | None = None
+        self.best_val_metrics: dict[str, Any] | None = None
 
         self.model.to(self.device)
         LOGGER.info(
-            "device=%s, trainable params=%s",
+            "device=%s  trainable params=%s  max_grad_norm=%s",
             self.device,
             f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,}",
+            self.max_grad_norm,
         )
 
-    # ---- loaders ------------------------------------------------------ #
+    # ---- one epoch ---------------------------------------------------- #
 
-    def make_loader(self, dataset, shuffle: bool, batch_size: int | None = None) -> DataLoader:
-        """Build a DataLoader with the project's collate function."""
-        return DataLoader(
-            dataset,
-            batch_size=batch_size or self.config.batch_size,
-            shuffle=shuffle,
-            num_workers=self.config.num_workers,
-            collate_fn=collate_batch,
-            pin_memory=self.device.type == "cuda",
-            drop_last=False,
-        )
+    def train_epoch(self) -> dict[str, Any]:
+        """One pass over the training data.
 
-    # ---- optimisation ------------------------------------------------- #
-
-    def build_optimizer(self) -> torch.optim.Optimizer:
-        groups = (
-            self.model.parameter_groups(
-                self.config.learning_rate,
-                self.config.head_learning_rate,
-                self.config.weight_decay,
-            )
-            if hasattr(self.model, "parameter_groups")
-            else [{"params": list(self.model.parameters())}]
-        )
-        return torch.optim.AdamW(groups, lr=self.config.learning_rate)
-
-    def _is_better(self, candidate: float, incumbent: float) -> bool:
-        """Lower is better for losses, higher for every other metric."""
-        if "loss" in self.config.monitor:
-            return candidate < incumbent
-        return candidate > incumbent
-
-    # ---- the loop ----------------------------------------------------- #
-
-    def train(self, train_dataset, val_dataset) -> TrainingOutcome:
-        """Fine-tune for ``config.epochs``, evaluating after each one."""
-        set_seed(self.config.seed)
-        train_loader = self.make_loader(train_dataset, shuffle=True)
-        val_loader = self.make_loader(
-            val_dataset, shuffle=False, batch_size=self.config.eval_batch_size
-        )
-
-        total_steps = max(1, len(train_loader) * self.config.epochs)
-        optimizer = self.build_optimizer()
-        scheduler = get_linear_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=int(total_steps * self.config.warmup_ratio),
-            num_training_steps=total_steps,
-        )
-
-        worst = float("inf") if "loss" in self.config.monitor else -float("inf")
-        outcome = TrainingOutcome(
-            best_epoch=-1, best_metric=worst, monitor=self.config.monitor
-        )
-        epochs_without_gain = 0
-        started = time.time()
-
-        for epoch in range(1, self.config.epochs + 1):
-            train_loss = self._train_one_epoch(
-                train_loader, optimizer, scheduler, epoch
-            )
-            result = evaluate(
-                self.model, val_loader, self.labels, self.device, self.loss_fn
-            )
-
-            record = {
-                "epoch": epoch,
-                "train_loss": train_loss,
-                "val_loss": result.loss,
-                "accuracy": result.accuracy,
-                "macro_f1": result.macro_f1,
-                "weighted_f1": result.weighted_f1,
-                "lr": optimizer.param_groups[0]["lr"],
-            }
-            outcome.history.append(record)
-            LOGGER.info(
-                "epoch %d/%d  train_loss=%.4f  val_loss=%.4f  acc=%.4f  macro_f1=%.4f",
-                epoch,
-                self.config.epochs,
-                train_loss,
-                result.loss or float("nan"),
-                result.accuracy,
-                result.macro_f1,
-            )
-
-            metric = record.get(self.config.monitor)
-            if metric is None:
-                raise ValueError(
-                    f"monitor={self.config.monitor!r} is not a recorded metric; "
-                    f"available: {sorted(k for k in record if k != 'epoch')}"
-                )
-
-            if self._is_better(metric, outcome.best_metric):
-                outcome.best_metric = float(metric)
-                outcome.best_epoch = epoch
-                outcome.best_result = result
-                outcome.best_state_dict = {
-                    k: v.detach().cpu().clone()
-                    for k, v in self.model.state_dict().items()
-                }
-                epochs_without_gain = 0
-                LOGGER.info(
-                    "new best %s=%.4f at epoch %d", self.config.monitor, metric, epoch
-                )
-            else:
-                epochs_without_gain += 1
-                if (
-                    self.config.early_stopping_patience
-                    and epochs_without_gain >= self.config.early_stopping_patience
-                ):
-                    LOGGER.info(
-                        "early stopping: no %s gain for %d epoch(s)",
-                        self.config.monitor,
-                        epochs_without_gain,
-                    )
-                    break
-
-        outcome.seconds = time.time() - started
-        if outcome.best_state_dict is None:
-            raise RuntimeError("training finished without a best checkpoint")
-
-        self.model.load_state_dict(outcome.best_state_dict)
-        LOGGER.info(
-            "restored best checkpoint (epoch %d, %s=%.4f) after %.1fs",
-            outcome.best_epoch,
-            outcome.monitor,
-            outcome.best_metric,
-            outcome.seconds,
-        )
-        return outcome
-
-    def _train_one_epoch(
-        self,
-        loader: DataLoader,
-        optimizer: torch.optim.Optimizer,
-        scheduler,
-        epoch: int,
-    ) -> float:
-        """One pass over the training data; returns the mean batch loss."""
+        Returns:
+            ``{"loss", "accuracy", "macro_f1"}`` over the epoch's own
+            predictions, which are collected as training proceeds -- so they
+            reflect a model that was still changing, and will read lower than a
+            clean pass over the same data.
+        """
         self.model.train()
-        running, n_batches = 0.0, 0
-        progress = tqdm(loader, desc=f"epoch {epoch}", leave=False)
+        total_loss, n_batches = 0.0, 0
+        y_true: list[int] = []
+        y_pred: list[int] = []
 
+        progress = tqdm(self.train_loader, desc="train", leave=False)
         for batch in progress:
             batch = {k: v.to(self.device) for k, v in batch.items()}
             labels = batch.pop("labels")
 
-            optimizer.zero_grad(set_to_none=True)
-            loss = self.model(**batch, labels=labels, loss_fn=self.loss_fn)["loss"]
+            self.optimizer.zero_grad(set_to_none=True)
+            output = self.model(**batch, labels=labels)
+            loss = output["loss"]
             loss.backward()
-            if self.config.max_grad_norm:
+
+            if self.max_grad_norm:
                 torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), self.config.max_grad_norm
+                    self.model.parameters(), self.max_grad_norm
                 )
-            optimizer.step()
-            scheduler.step()
+            self.optimizer.step()
+            if self.scheduler is not None:
+                self.scheduler.step()
 
-            running += float(loss)
+            total_loss += float(loss.detach())
             n_batches += 1
-            progress.set_postfix(loss=f"{running / n_batches:.4f}")
+            y_true.extend(labels.detach().cpu().tolist())
+            y_pred.extend(output["logits"].detach().argmax(dim=-1).cpu().tolist())
+            progress.set_postfix(loss=f"{total_loss / n_batches:.4f}")
 
-        return running / max(1, n_batches)
-
-    def evaluate(self, dataset) -> EvalResult:
-        """Score any dataset with the trainer's device and loss function."""
-        loader = self.make_loader(
-            dataset, shuffle=False, batch_size=self.config.eval_batch_size
+        labels_names = self._label_names()
+        metrics = compute_metrics(
+            y_true, y_pred, labels_names, loss=total_loss / max(1, n_batches), split="train"
         )
-        return evaluate(self.model, loader, self.labels, self.device, self.loss_fn)
+        return {
+            "loss": metrics["loss"],
+            "accuracy": metrics["accuracy"],
+            "macro_f1": metrics["macro_f1"],
+        }
+
+    @torch.no_grad()
+    def eval_epoch(self, loader=None) -> dict[str, Any]:
+        """Evaluate without updating weights.
+
+        Returns:
+            ``{"loss", "accuracy", "macro_f1", "per_class_f1"}``.
+        """
+        loader = loader if loader is not None else self.val_loader
+        self.model.eval()
+
+        total_loss, n_batches = 0.0, 0
+        y_true: list[int] = []
+        y_pred: list[int] = []
+
+        for batch in tqdm(loader, desc="eval", leave=False):
+            batch = {k: v.to(self.device) for k, v in batch.items()}
+            labels = batch.pop("labels", None)
+            output = self.model(**batch, labels=labels)
+            y_pred.extend(output["logits"].argmax(dim=-1).cpu().tolist())
+            if labels is not None:
+                y_true.extend(labels.cpu().tolist())
+                total_loss += float(output["loss"])
+                n_batches += 1
+
+        if not y_true:
+            raise ValueError("eval_epoch() needs labelled batches")
+
+        metrics = compute_metrics(
+            y_true,
+            y_pred,
+            self._label_names(),
+            loss=total_loss / max(1, n_batches),
+            split="val",
+        )
+        return {
+            "loss": metrics["loss"],
+            "accuracy": metrics["accuracy"],
+            "macro_f1": metrics["macro_f1"],
+            "per_class_f1": per_class_f1(metrics),
+            "metrics": metrics,
+        }
+
+    # ---- the loop ----------------------------------------------------- #
+
+    def fit(self, num_epochs: int) -> list[dict[str, Any]]:
+        """Train for ``num_epochs``, keeping the best-val-macro-F1 weights.
+
+        Returns:
+            One dict per epoch. The model is left holding the best weights,
+            not the last epoch's.
+        """
+        if num_epochs < 1:
+            raise ValueError(f"num_epochs must be >= 1, got {num_epochs}")
+
+        started = time.time()
+        for epoch in range(1, num_epochs + 1):
+            epoch_start = time.time()
+            # Captured before the epoch's steps: a completed linear schedule
+            # ends at exactly 0, which says nothing about how the epoch ran.
+            epoch_lr = self.optimizer.param_groups[0]["lr"]
+            train_metrics = self.train_epoch()
+            val_metrics = self.eval_epoch()
+
+            record = {
+                "epoch": epoch,
+                "train_loss": train_metrics["loss"],
+                "train_accuracy": train_metrics["accuracy"],
+                "train_macro_f1": train_metrics["macro_f1"],
+                "val_loss": val_metrics["loss"],
+                "val_accuracy": val_metrics["accuracy"],
+                "val_macro_f1": val_metrics["macro_f1"],
+                "val_per_class_f1": val_metrics["per_class_f1"],
+                "lr": epoch_lr,
+                "seconds": round(time.time() - epoch_start, 1),
+            }
+            self.history.append(record)
+
+            LOGGER.info(
+                "epoch %d/%d  train_loss=%.4f acc=%.4f f1=%.4f | "
+                "val_loss=%.4f acc=%.4f f1=%.4f",
+                epoch, num_epochs,
+                record["train_loss"], record["train_accuracy"], record["train_macro_f1"],
+                record["val_loss"], record["val_accuracy"], record["val_macro_f1"],
+            )
+
+            if record["val_macro_f1"] > self.best_macro_f1:
+                self.best_macro_f1 = record["val_macro_f1"]
+                self.best_epoch = epoch
+                self.best_val_metrics = val_metrics["metrics"]
+                self.best_state = copy.deepcopy(
+                    {k: v.detach().cpu() for k, v in self.model.state_dict().items()}
+                )
+                self._save_checkpoint(epoch)
+                LOGGER.info(
+                    "new best val macro_f1=%.4f (epoch %d)", self.best_macro_f1, epoch
+                )
+
+        if self.best_state is None:
+            raise RuntimeError("training finished without a best checkpoint")
+
+        self.model.load_state_dict(self.best_state)
+        LOGGER.info(
+            "restored best checkpoint: epoch %d, val macro_f1=%.4f (%.1fs total)",
+            self.best_epoch, self.best_macro_f1, time.time() - started,
+        )
+        return self.history
+
+    # ---- helpers ------------------------------------------------------ #
+
+    def _label_names(self) -> list[str]:
+        if self.label_map is not None:
+            return list(self.label_map.labels)
+        return [str(i) for i in range(getattr(self.model, "num_labels", 3))]
+
+    def _save_checkpoint(self, epoch: int) -> Path | None:
+        """Write the current best weights, if a checkpoint dir was configured."""
+        if self.checkpoint_dir is None:
+            return None
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        path = self.checkpoint_dir / CHECKPOINT_FILE
+        torch.save(
+            {
+                "state_dict": self.best_state,
+                "epoch": epoch,
+                "val_macro_f1": self.best_macro_f1,
+            },
+            path,
+        )
+        return path
