@@ -39,7 +39,13 @@ absa-project/
 │   │   └── routes/         sentiment.py — predict | health | model
 │   ├── tests/              39 tests, no artifact needed
 │   └── requirements.txt
-└── frontend/            (not started)
+└── frontend/            React + TypeScript UI (Vite)
+    └── src/
+        ├── types/          shapes mirroring the backend schemas
+        ├── services/       api.ts — typed axios client
+        ├── components/     SentimentBadge, ResultCard, ReviewForm
+        ├── pages/          AnalysisPage, PerformancePage
+        └── App.tsx         tab toggle
 ```
 
 ## Data
@@ -357,7 +363,38 @@ artifact is missing the service still boots and reports
 answering 503 — easier to diagnose than a crash-looping container. See
 [`backend/README.md`](backend/README.md) for the full design notes.
 
-## Next
+## Frontend
 
-`frontend/` is intentionally empty. The artifact format and the API above are
-the foundation it will build on.
+Two screens: analyze a review, and view the served model's metrics.
+
+```bash
+cd backend && uvicorn app.main:app --port 8000   # must be up first
+cd frontend && npm install && npm run dev        # http://localhost:5173
+```
+
+`VITE_API_URL` (see `frontend/.env.example`) overrides the backend URL; it
+defaults to `http://localhost:8000`, and the backend's CORS policy already
+allows the Vite dev origin. Functional rather than polished — plain Tailwind,
+no animations, no responsive work. See
+[`frontend/README.md`](frontend/README.md).
+
+## Running the whole stack
+
+```bash
+# 1. train a model (writes training/artifacts/absa-v1/)
+cd training && python train.py train
+
+# 2. serve it
+cd ../backend && uvicorn app.main:app --port 8000
+
+# 3. the UI
+cd ../frontend && npm run dev
+```
+
+## Tests at a glance
+
+| Suite | Count | Needs an artifact? |
+| --- | --- | --- |
+| `training/tests` | 138 | no — tiny encoder built from config |
+| `backend/tests` | 39 | no — mocked registry |
+| `frontend` | `tsc -b` + oxlint | no |
