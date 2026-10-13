@@ -1,0 +1,37 @@
+# Default run: BERT-base with aspect+context pooling.
+name: bert-base-aspect-context
+artifacts_dir: artifacts
+
+data:
+  train_csv: data/raw/Laptop_Train_v2.csv
+  test_csv: data/raw/Laptops_Test_Gold.csv
+  splits_dir: data/processed/splits
+  labels: [negative, neutral, positive]
+  val_fraction: 0.1
+  seed: 42
+  save_splits: true
+
+model:
+  model_name: bert-base-uncased
+  max_length: 128
+  dropout: 0.1
+  pooling: aspect_context   # cls | aspect | aspect_context
+  freeze_encoder: false
+  hidden_dim: null          # null -> single linear layer
+
+train:
+  epochs: 4
+  batch_size: 32
+  eval_batch_size: 64
+  learning_rate: 2.0e-5
+  head_learning_rate: 1.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  max_grad_norm: 1.0
+  label_smoothing: 0.0
+  class_weighting: true
+  num_workers: 0
+  device: auto
+  seed: 42
+  early_stopping_patience: 0
+  monitor: macro_f1

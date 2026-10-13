@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Model weights / checkpoints
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Data and run outputs
+training/data/raw/
+training/data/processed/
+training/artifacts/
+training/experiments/runs/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+
+# Tooling caches
+.pytest_cache/
+.ipynb_checkpoints/
