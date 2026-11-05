@@ -76,6 +76,7 @@ NUMERIC_KEYS: dict[str, type] = {
     "training.warmup_ratio": float,
     "training.max_grad_norm": float,
     "training.val_fraction": float,
+    "training.early_stopping_patience": int,
     "optim.head_lr": float,
     "optim.eval_batch_size": int,
     "optim.num_workers": int,
@@ -109,6 +110,14 @@ def validate_config(cfg: dict[str, Any]) -> None:
         )
     if int(get(cfg, "training.epochs")) < 1:
         raise ValueError(f"training.epochs must be >= 1, got {get(cfg, 'training.epochs')}")
+    # Absent or null disables early stopping; a negative number is a mistake
+    # rather than a way of expressing that.
+    patience = get(cfg, "training.early_stopping_patience")
+    if patience is not None and int(patience) < 0:
+        raise ValueError(
+            f"training.early_stopping_patience must be >= 0 (0 disables it), "
+            f"got {patience}"
+        )
     if int(get(cfg, "model.num_labels")) < 2:
         raise ValueError(
             f"model.num_labels must be >= 2, got {get(cfg, 'model.num_labels')}"

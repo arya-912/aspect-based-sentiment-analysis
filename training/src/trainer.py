@@ -46,6 +46,11 @@ class Trainer:
     The optimizer and scheduler are supplied by the caller, which keeps the
     schedule (warmup length, parameter groups) visible at the call site instead
     of buried in here.
+
+    ``config["early_stopping_patience"]`` stops the run after that many
+    consecutive epochs without a new best validation macro F1. Absent, ``None``
+    or ``0`` disables it and every configured epoch runs, which is what every
+    config written before this option existed means.
     """
 
     def __init__(
@@ -72,18 +77,30 @@ class Trainer:
             Path(self.config["checkpoint_dir"]) if self.config.get("checkpoint_dir") else None
         )
 
+        # None disables early stopping. Read through int() so a YAML string
+        # cannot silently become a truthy non-number.
+        patience = self.config.get("early_stopping_patience")
+        self.early_stopping_patience: int | None = (
+            int(patience) if patience not in (None, "") and int(patience) > 0 else None
+        )
+
         self.history: list[dict[str, Any]] = []
         self.best_macro_f1 = -float("inf")
         self.best_epoch = -1
         self.best_state: dict[str, torch.Tensor] | None = None
         self.best_val_metrics: dict[str, Any] | None = None
+        #: Consecutive epochs since the last new best, for early stopping.
+        self.epochs_without_improvement = 0
+        #: True when :meth:`fit` returned before running every epoch.
+        self.stopped_early = False
 
         self.model.to(self.device)
         LOGGER.info(
-            "device=%s  trainable params=%s  max_grad_norm=%s",
+            "device=%s  trainable params=%s  max_grad_norm=%s  patience=%s",
             self.device,
             f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,}",
             self.max_grad_norm,
+            self.early_stopping_patience or "off",
         )
 
     # ---- one epoch ---------------------------------------------------- #
@@ -181,11 +198,13 @@ class Trainer:
     # ---- the loop ----------------------------------------------------- #
 
     def fit(self, num_epochs: int) -> list[dict[str, Any]]:
-        """Train for ``num_epochs``, keeping the best-val-macro-F1 weights.
+        """Train for up to ``num_epochs``, keeping the best-val-macro-F1 weights.
 
         Returns:
-            One dict per epoch. The model is left holding the best weights,
-            not the last epoch's.
+            One dict per epoch *run* -- fewer than ``num_epochs`` when early
+            stopping fired, so the length of the history is the record of how
+            long the run actually went. The model is left holding the best
+            weights, not the last epoch's.
         """
         if num_epochs < 1:
             raise ValueError(f"num_epochs must be >= 1, got {num_epochs}")
@@ -221,6 +240,8 @@ class Trainer:
                 record["val_loss"], record["val_accuracy"], record["val_macro_f1"],
             )
 
+            # Strictly greater, so a plateau counts against patience rather
+            # than resetting it -- matching how the best epoch is chosen.
             if record["val_macro_f1"] > self.best_macro_f1:
                 self.best_macro_f1 = record["val_macro_f1"]
                 self.best_epoch = epoch
@@ -229,9 +250,32 @@ class Trainer:
                     {k: v.detach().cpu() for k, v in self.model.state_dict().items()}
                 )
                 self._save_checkpoint(epoch)
+                self.epochs_without_improvement = 0
                 LOGGER.info(
                     "new best val macro_f1=%.4f (epoch %d)", self.best_macro_f1, epoch
                 )
+            else:
+                self.epochs_without_improvement += 1
+                if (
+                    self.early_stopping_patience is not None
+                    and self.epochs_without_improvement >= self.early_stopping_patience
+                ):
+                    # The best weights are already saved, so stopping here
+                    # loses nothing but the epochs that were making it worse.
+                    #
+                    # Reaching the limit on the final epoch skips nothing, so
+                    # that is not an early stop and must not be reported as
+                    # one -- "early stop after epoch 4 of 4" is just a
+                    # completed run described wrongly.
+                    if epoch < num_epochs:
+                        self.stopped_early = True
+                        LOGGER.info(
+                            "early stop after epoch %d of %d: %d epoch(s) without a "
+                            "new best val macro_f1 (best %.4f at epoch %d)",
+                            epoch, num_epochs, self.epochs_without_improvement,
+                            self.best_macro_f1, self.best_epoch,
+                        )
+                    break
 
         if self.best_state is None:
             raise RuntimeError("training finished without a best checkpoint")

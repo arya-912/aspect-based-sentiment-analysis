@@ -373,6 +373,7 @@ def test_the_ablation_config_differs_from_the_default_only_as_intended():
                 "model.num_labels", "training.epochs", "training.batch_size",
                 "training.lr", "training.weight_decay", "training.warmup_ratio",
                 "training.max_grad_norm", "training.val_fraction",
+                "training.early_stopping_patience",
                 "data.class_weighting", "data.labels", "optim.head_lr",
                 "optim.eval_batch_size", "paths.raw_train", "paths.official_test",
                 "paths.processed_dir", "paths.artifacts_dir"):
@@ -463,6 +464,32 @@ def test_validate_config_rejects_an_out_of_range_val_fraction():
     cfg = load_config()
     cfg["training"]["val_fraction"] = 1.5
     with pytest.raises(ValueError, match="val_fraction"):
+        validate_config(cfg)
+
+
+def test_default_config_enables_early_stopping():
+    cfg = load_config()
+    assert get(cfg, "training.early_stopping_patience") == 2
+
+
+def test_early_stopping_patience_is_coerced_to_an_int():
+    """PyYAML can hand back a string; AdamW-style surprises are avoided early."""
+    cfg = {"training": {"early_stopping_patience": "3"}}
+    coerce_numeric(cfg)
+    assert get(cfg, "training.early_stopping_patience") == 3
+
+
+@pytest.mark.parametrize("patience", [2, 0, None])
+def test_validate_config_accepts_a_sane_patience(patience):
+    cfg = load_config(overrides=None)
+    set_in(cfg, "training.early_stopping_patience", patience)
+    validate_config(cfg)
+
+
+def test_validate_config_rejects_a_negative_patience():
+    cfg = load_config()
+    set_in(cfg, "training.early_stopping_patience", -1)
+    with pytest.raises(ValueError, match="early_stopping_patience"):
         validate_config(cfg)
 
 

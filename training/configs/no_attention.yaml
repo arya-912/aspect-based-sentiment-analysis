@@ -30,6 +30,12 @@ training:
   warmup_ratio: 0.1
   max_grad_norm: 1.0
   val_fraction: 0.1
+  # Stop after this many consecutive epochs with no new best val macro F1.
+  # 0 or null runs every configured epoch. This changes neither recorded run:
+  # absa-v1 peaked at epoch 3 of 4 and absa-noattn at epoch 2, so the counter
+  # never reaches 2 before the configured epochs run out. It is insurance for
+  # raising `epochs`, not a change to the published results.
+  early_stopping_patience: 2
 
 paths:
   raw_train: training/data/raw/Laptop_Train_v2.csv

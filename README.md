@@ -183,6 +183,8 @@ file and per-command flags override individual values:
 python train.py --config configs/quick.yaml train   # 1 epoch, max_length 64
 python train.py --config configs/no_attention.yaml train   # ablation -> absa-noattn
 python train.py train --epochs 2 --batch-size 32 --version absa-v2
+python train.py train --epochs 10 --patience 2       # stop once val macro F1 stalls
+python train.py train --patience 0                   # run every configured epoch
 python train.py train --model-name roberta-base --lr 2e-5
 python train.py evaluate --show-attention           # most-attended tokens
 python train.py evaluate --artifact artifacts/absa-v1 --out-dir /tmp/report
@@ -199,7 +201,8 @@ the same whether run from the repo root or from `training/`.
 seed: 42
 model:    {name: bert-base-uncased, max_length: 128, dropout: 0.1, num_labels: 3}
 training: {epochs: 4, batch_size: 16, lr: 3e-5, weight_decay: 0.01,
-           warmup_ratio: 0.1, max_grad_norm: 1.0, val_fraction: 0.1}
+           warmup_ratio: 0.1, max_grad_norm: 1.0, val_fraction: 0.1,
+           early_stopping_patience: 2}
 paths:    {raw_train: ..., official_test: ..., processed_dir: ..., artifacts_dir: ...}
 artifact: {version: absa-v1}
 ```
@@ -270,7 +273,7 @@ This is the seam the `backend/` service will sit on.
 cd training && python -m pytest tests/ -q
 ```
 
-153 tests, all on CPU and all offline. Model and artifact tests run against a
+170 tests, all on CPU and all offline. Model and artifact tests run against a
 tiny randomly-initialised BERT (2 layers, hidden size 32) built from a config,
 so nothing is downloaded and the suite finishes in seconds — the architecture
 under test is the attention and the head, not the pretrained weights.
@@ -280,7 +283,7 @@ under test is the attention and the head, not the pretrained weights.
 | `test_dataset.py` | `LabelMap`, the CSV quirks above, offset validation, split integrity (no sentence leakage, determinism per seed) |
 | `test_tokenizer.py` | mask shapes and semantics (disjoint, no specials or padding, correct multi-word spans), truncation, empty-aspect/text errors |
 | `test_model.py` | attention normalisation and masking, degenerate rows, backward reach, optimizer groups, metrics, the no-attention ablation |
-| `test_trainer.py` | epoch metrics, gradient clipping, best-checkpoint selection and restore, scheduler stepping, overfitting one batch |
+| `test_trainer.py` | epoch metrics, gradient clipping, best-checkpoint selection and restore, scheduler stepping, overfitting one batch, early stopping |
 | `test_artifact.py` | every required file written, exact offline round-trip, each missing entry rejected, config loading, ablated round-trip |
 
 Tests needing the corpus skip cleanly when it is absent.
@@ -346,7 +349,23 @@ parameters. Validation macro F1 still peaks at epoch 3, so that is the
 checkpoint kept and packaged. Selecting on validation loss would have picked
 epoch 2; keeping the last epoch would have given the worst of the four. About
 42.5 minutes total on CPU, and `training.epochs: 4` is enough to find the peak
-and see it pass — there is no early stopping, so every configured epoch runs.
+and see it pass.
+
+**Early stopping.** `training.early_stopping_patience: 2` ends a run after two
+consecutive epochs with no new best validation macro F1. A plateau counts
+against it, since equality is not an improvement under the same rule that
+picks the best epoch — and the best weights are already checkpointed when it
+fires, so stopping costs nothing but epochs that were making the model worse.
+Absent, `null` or `0` runs every configured epoch, which is what every config
+written before the option existed means.
+
+It was added *after* both published runs, and it would not have changed
+either: `absa-v1` peaked at epoch 3 of 4, and `absa-noattn` peaked at epoch 2
+and did reach the limit — but on its final epoch, which skips nothing and so
+is not reported as an early stop. A parametrised test replays both recorded
+trajectories to keep that true. The option is therefore insurance for raising
+`epochs`, not a change to the published numbers: at four epochs there is
+simply not enough room for it to act. `--patience N` overrides it per run.
 
 ### What the attention learned
 
@@ -535,6 +554,6 @@ cd ../frontend && npm run dev
 
 | Suite | Count | Needs an artifact? |
 | --- | --- | --- |
-| `training/tests` | 153 | no — tiny encoder built from config |
+| `training/tests` | 170 | no — tiny encoder built from config |
 | `backend/tests` | 49 | no — mocked registry |
 | `frontend` | `tsc -b` + oxlint | no |

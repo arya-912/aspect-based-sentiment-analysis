@@ -216,6 +216,7 @@ def cmd_train(cfg: dict[str, Any], args: argparse.Namespace) -> int:
             "max_grad_norm": float(get(cfg, "training.max_grad_norm", 1.0)),
             "label_map": label_map,
             "checkpoint_dir": str(run_dir),
+            "early_stopping_patience": get(cfg, "training.early_stopping_patience"),
         },
     )
     history = trainer.fit(epochs)
@@ -264,6 +265,11 @@ def cmd_train(cfg: dict[str, Any], args: argparse.Namespace) -> int:
 
     print(f"artifact   : {directory}")
     print(f"best epoch : {trainer.best_epoch} (val macro_f1={trainer.best_macro_f1:.4f})")
+    if trainer.stopped_early:
+        print(
+            f"early stop : after epoch {len(history)} of {epochs} "
+            f"({trainer.epochs_without_improvement} without improvement)"
+        )
     return 0
 
 
@@ -356,6 +362,10 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--version", help="artifact version directory name")
     train.add_argument("--run-id", dest="run_id", help="run id recorded in config.json")
     train.add_argument("--seed", type=int)
+    train.add_argument(
+        "--patience", type=int,
+        help="stop after N epochs with no new best val macro F1 (0 disables)",
+    )
     train.add_argument("--device", help="cuda | cpu (default: cuda when available)")
     train.add_argument("--prepare", action="store_true", help="re-split before training")
     train.add_argument(
@@ -389,6 +399,7 @@ OVERRIDES = {
     "batch_size": "training.batch_size",
     "lr": "training.lr",
     "val_fraction": "training.val_fraction",
+    "patience": "training.early_stopping_patience",
     "version": "artifact.version",
 }
 

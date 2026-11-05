@@ -15,9 +15,11 @@ def loaders(random_batch):
     return [random_batch(batch_size=4, seq_len=16) for _ in range(3)]
 
 
-def make_trainer(model, loaders, tmp_path=None, lr=1e-3, scheduler=None):
+def make_trainer(model, loaders, tmp_path=None, lr=1e-3, scheduler=None, patience=None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     config = {"max_grad_norm": 1.0, "label_map": LabelMap()}
+    if patience is not None:
+        config["early_stopping_patience"] = patience
     if tmp_path is not None:
         config["checkpoint_dir"] = str(tmp_path)
     return Trainer(
@@ -29,6 +31,28 @@ def make_trainer(model, loaders, tmp_path=None, lr=1e-3, scheduler=None):
         device="cpu",
         config=config,
     )
+
+
+def script_validation(trainer, macro_f1_values, monkeypatch):
+    """Drive ``fit`` with a fixed sequence of validation macro F1 scores.
+
+    Early stopping is a decision about a *trajectory*, and a tiny model on
+    three random batches does not reliably produce one. Scripting the metric
+    makes each test state the trajectory it is about.
+    """
+    values = iter(macro_f1_values)
+
+    def fake_eval(loader=None):
+        f1 = next(values)
+        return {
+            "loss": 1.0,
+            "accuracy": 0.5,
+            "macro_f1": f1,
+            "per_class_f1": {name: f1 for name in LabelMap().labels},
+            "metrics": {"macro_f1": f1, "split": "val"},
+        }
+
+    monkeypatch.setattr(trainer, "eval_epoch", fake_eval)
 
 
 # ---- helpers ---------------------------------------------------------- #
@@ -168,6 +192,146 @@ def test_fit_stores_the_best_validation_metrics(tiny_model, loaders):
     assert metrics["evaluation_split"] == "val"
     assert metrics["n"] == 12
     assert "confusion_matrix" in metrics
+
+
+# ---- early stopping --------------------------------------------------- #
+
+
+def test_early_stopping_is_off_by_default(tiny_model, loaders, monkeypatch):
+    """Every config written before this option existed must keep its meaning."""
+    trainer = make_trainer(tiny_model, loaders)
+    assert trainer.early_stopping_patience is None
+
+    script_validation(trainer, [0.9, 0.1, 0.1, 0.1, 0.1], monkeypatch)
+    history = trainer.fit(5)
+
+    assert len(history) == 5
+    assert trainer.stopped_early is False
+
+
+@pytest.mark.parametrize("patience", [0, None])
+def test_patience_of_zero_or_none_disables_it(tiny_model, loaders, monkeypatch, patience):
+    trainer = make_trainer(tiny_model, loaders, patience=patience)
+    assert trainer.early_stopping_patience is None
+
+    script_validation(trainer, [0.9, 0.1, 0.1, 0.1], monkeypatch)
+    assert len(trainer.fit(4)) == 4
+
+
+def test_early_stopping_fires_after_patience_epochs(tiny_model, loaders, monkeypatch):
+    """Best at epoch 1, then two worse epochs -> stop after epoch 3 of 6."""
+    trainer = make_trainer(tiny_model, loaders, patience=2)
+    script_validation(trainer, [0.90, 0.50, 0.40, 0.99, 0.99, 0.99], monkeypatch)
+
+    history = trainer.fit(6)
+
+    assert trainer.stopped_early is True
+    assert len(history) == 3
+    assert [record["epoch"] for record in history] == [1, 2, 3]
+    assert trainer.best_epoch == 1
+    assert trainer.best_macro_f1 == pytest.approx(0.90)
+
+
+def test_an_improvement_resets_the_patience_counter(tiny_model, loaders, monkeypatch):
+    """Dip, recover, dip twice: the recovery must buy two more epochs."""
+    trainer = make_trainer(tiny_model, loaders, patience=2)
+    script_validation(trainer, [0.50, 0.40, 0.60, 0.55, 0.52, 0.99], monkeypatch)
+
+    history = trainer.fit(6)
+
+    assert trainer.stopped_early is True
+    assert len(history) == 5, "epoch 3 improved, so epochs 4 and 5 were allowed"
+    assert trainer.best_epoch == 3
+    assert trainer.best_macro_f1 == pytest.approx(0.60)
+
+
+def test_a_plateau_counts_against_patience(tiny_model, loaders, monkeypatch):
+    """Equal is not an improvement -- the same rule that picks the best epoch."""
+    trainer = make_trainer(tiny_model, loaders, patience=2)
+    script_validation(trainer, [0.70, 0.70, 0.70, 0.70], monkeypatch)
+
+    history = trainer.fit(4)
+
+    assert trainer.stopped_early is True
+    assert len(history) == 3
+    assert trainer.best_epoch == 1
+
+
+def test_early_stopping_still_leaves_the_best_weights_loaded(
+    tiny_model, loaders, tmp_path, monkeypatch
+):
+    """Stopping must not cost the checkpoint: that is the whole point."""
+    trainer = make_trainer(tiny_model, loaders, tmp_path=tmp_path, patience=1)
+    script_validation(trainer, [0.80, 0.10, 0.10], monkeypatch)
+    trainer.fit(3)
+
+    assert trainer.stopped_early is True
+    assert trainer.best_epoch == 1
+    assert (tmp_path / CHECKPOINT_FILE).is_file()
+
+    saved = torch.load(tmp_path / CHECKPOINT_FILE, map_location="cpu", weights_only=False)
+    assert saved["epoch"] == 1
+    current = tiny_model.state_dict()
+    for key, value in saved["state_dict"].items():
+        assert torch.allclose(current[key].cpu(), value), key
+
+
+def test_early_stopping_never_fires_while_every_epoch_improves(
+    tiny_model, loaders, monkeypatch
+):
+    trainer = make_trainer(tiny_model, loaders, patience=1)
+    script_validation(trainer, [0.1, 0.2, 0.3, 0.4], monkeypatch)
+
+    assert len(trainer.fit(4)) == 4
+    assert trainer.stopped_early is False
+    assert trainer.best_epoch == 4
+
+
+@pytest.mark.parametrize(
+    "run, trajectory, best",
+    [
+        # Recorded val_macro_f1 per epoch, from each artifact's config.json.
+        ("absa-v1", [0.6284, 0.6612, 0.7067, 0.6836], 3),
+        ("absa-noattn", [0.6164, 0.6404, 0.6302, 0.6231], 2),
+    ],
+)
+def test_patience_two_would_not_have_changed_either_published_run(
+    tiny_model, loaders, monkeypatch, run, trajectory, best
+):
+    """Guards the claim that `early_stopping_patience: 2` is behaviour-preserving.
+
+    Both configs now carry it, and both artifacts' documented results predate
+    it. absa-v1 peaked at epoch 3 of 4 and absa-noattn at epoch 2, so in
+    neither case does the counter reach 2 before the epochs run out. If a
+    future edit changes the rule so that it would have, this fails.
+    """
+    trainer = make_trainer(tiny_model, loaders, patience=2)
+    script_validation(trainer, trajectory, monkeypatch)
+
+    history = trainer.fit(len(trajectory))
+
+    assert len(history) == len(trajectory), f"{run} would have stopped early"
+    assert trainer.stopped_early is False
+    assert trainer.best_epoch == best
+
+
+def test_reaching_the_limit_on_the_final_epoch_is_not_an_early_stop(
+    tiny_model, loaders, monkeypatch
+):
+    """Nothing was skipped, so the run completed -- however the loop exited.
+
+    The counter does reach the limit here, which is exactly absa-noattn's
+    trajectory. Calling that an early stop would report a full 4-epoch run as
+    a truncated one.
+    """
+    trainer = make_trainer(tiny_model, loaders, patience=2)
+    script_validation(trainer, [0.70, 0.60, 0.50], monkeypatch)
+
+    history = trainer.fit(3)
+
+    assert len(history) == 3
+    assert trainer.stopped_early is False
+    assert trainer.epochs_without_improvement == 2
 
 
 # ---- gradient clipping ------------------------------------------------ #
