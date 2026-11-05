@@ -97,6 +97,21 @@ def tiny_model(tiny_backbone):
 
 
 @pytest.fixture
+def tiny_model_no_attention(tiny_backbone):
+    """The ablation control: same model, aspect attention removed."""
+    from src.models.absa_model import BertAspectAttention
+
+    torch.manual_seed(0)
+    return BertAspectAttention(
+        model_name="tiny-bert-test",
+        num_labels=3,
+        dropout=0.1,
+        encoder=tiny_backbone(),
+        use_attention=False,
+    )
+
+
+@pytest.fixture
 def random_batch():
     """A collated batch with realistic, disjoint segment masks."""
 

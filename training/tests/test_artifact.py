@@ -251,6 +251,135 @@ def test_predict_pairs_on_no_input():
     assert predict_pairs(None, None, None, []) == []
 
 
+# ---- ablated artifacts ------------------------------------------------ #
+
+
+def test_ablated_model_round_trips(artifact_cfg, tiny_backbone, tiny_encoder, metrics):
+    """The whole point of the flag: a no-attention run must reload strictly.
+
+    Its state dict has no ``attention.*`` keys, so ``load_artifact`` has to
+    rebuild the same shape from ``model.use_attention`` in config.json. Getting
+    that wrong fails here rather than silently serving a different model.
+    """
+    set_in(artifact_cfg, "model.use_attention", False)
+    set_in(artifact_cfg, "artifact.version", "absa-noattn-test")
+    torch.manual_seed(0)
+    model = BertAspectAttention(
+        model_name="tiny-bert-test",
+        num_labels=3,
+        encoder=tiny_backbone(),
+        use_attention=False,
+    )
+
+    directory = build_artifact(
+        cfg=artifact_cfg,
+        run_id="ablation-1",
+        model=model,
+        encoder=tiny_encoder,
+        label_map=LabelMap(LABELS),
+        test_metrics=metrics,
+        best_epoch=1,
+    )
+    with (directory / CONFIG_FILE).open(encoding="utf-8") as handle:
+        assert json.load(handle)["model"]["use_attention"] is False
+
+    reloaded, _, _, config = load_artifact(directory, device="cpu")
+    assert reloaded.use_attention is False
+    assert reloaded.attention is None
+    assert config["model"]["use_attention"] is False
+
+
+def test_ablated_model_reproduces_its_logits_after_reload(
+    artifact_cfg, tiny_backbone, tiny_encoder, metrics, random_batch
+):
+    set_in(artifact_cfg, "model.use_attention", False)
+    torch.manual_seed(0)
+    model = BertAspectAttention(
+        model_name="tiny-bert-test",
+        num_labels=3,
+        encoder=tiny_backbone(),
+        use_attention=False,
+    )
+    model.eval()
+    batch = random_batch(with_labels=False)
+    with torch.no_grad():
+        before = model(**batch)["logits"]
+
+    directory = build_artifact(
+        cfg=artifact_cfg, run_id="ablation-2", model=model, encoder=tiny_encoder,
+        label_map=LabelMap(LABELS), test_metrics=metrics, best_epoch=1,
+    )
+    reloaded, _, _, _ = load_artifact(directory, device="cpu")
+    with torch.no_grad():
+        after = reloaded(**batch)["logits"]
+
+    assert torch.allclose(before, after, atol=1e-6)
+
+
+def test_predict_pairs_reports_no_attention_for_an_ablated_model(
+    artifact_cfg, tiny_backbone, tiny_encoder, metrics
+):
+    """None, not an empty list: there is no distribution, not an empty one."""
+    set_in(artifact_cfg, "model.use_attention", False)
+    torch.manual_seed(0)
+    model = BertAspectAttention(
+        model_name="tiny-bert-test", num_labels=3,
+        encoder=tiny_backbone(), use_attention=False,
+    )
+    directory = build_artifact(
+        cfg=artifact_cfg, run_id="ablation-3", model=model, encoder=tiny_encoder,
+        label_map=LabelMap(LABELS), test_metrics=metrics, best_epoch=1,
+    )
+    reloaded, encoder, label_map, _ = load_artifact(directory, device="cpu")
+
+    results = predict_pairs(
+        reloaded, encoder, label_map, [("the screen is bright", "screen")]
+    )
+    assert len(results) == 1
+    assert results[0]["attention"] is None
+    assert results[0]["label"] in LABELS
+    assert 0.0 <= results[0]["confidence"] <= 1.0
+
+
+def test_an_artifact_without_the_flag_reloads_with_attention(built):
+    """Back-compatibility: absa-v1's config.json predates ``use_attention``."""
+    directory, _, _ = built
+    with (directory / CONFIG_FILE).open(encoding="utf-8") as handle:
+        assert "use_attention" not in json.load(handle)["model"]
+
+    reloaded, _, _, _ = load_artifact(directory, device="cpu")
+    assert reloaded.use_attention is True
+    assert reloaded.attention is not None
+
+
+def test_the_ablation_config_differs_from_the_default_only_as_intended():
+    """The comparison is only valid if nothing else was changed.
+
+    Guards the two files drifting apart: a later edit to default.yaml that is
+    not mirrored would quietly turn the ablation into a confounded run.
+    """
+    from pathlib import Path
+
+    from src.config import PROJECT_ROOT
+
+    default = load_config(PROJECT_ROOT / "training" / "configs" / "default.yaml")
+    ablation = load_config(PROJECT_ROOT / "training" / "configs" / "no_attention.yaml")
+
+    assert get(ablation, "model.use_attention") is False
+    assert get(default, "model.use_attention", True) is True
+    assert get(ablation, "artifact.version") == "absa-noattn"
+
+    for key in ("seed", "model.name", "model.max_length", "model.dropout",
+                "model.num_labels", "training.epochs", "training.batch_size",
+                "training.lr", "training.weight_decay", "training.warmup_ratio",
+                "training.max_grad_norm", "training.val_fraction",
+                "data.class_weighting", "data.labels", "optim.head_lr",
+                "optim.eval_batch_size", "paths.raw_train", "paths.official_test",
+                "paths.processed_dir", "paths.artifacts_dir"):
+        assert get(default, key) == get(ablation, key), key
+    assert Path(get(ablation, "config_path")).name == "no_attention.yaml"
+
+
 # ---- incomplete artifacts --------------------------------------------- #
 
 

@@ -202,6 +202,11 @@ def load_artifact(
         num_labels=int(config.get("num_labels") or model_cfg.get("num_labels") or label_map.num_labels),
         dropout=float(model_cfg.get("dropout", 0.1)),
         encoder=backbone,
+        # Defaults to True so an artifact written before this key existed --
+        # absa-v1 among them -- still rebuilds with its attention. An ablated
+        # run has no attention.* weights, so getting this wrong would fail the
+        # strict load below rather than load something subtly different.
+        use_attention=bool(model_cfg.get("use_attention", True)),
     )
 
     state = torch.load(directory / MODEL_FILE, map_location="cpu", weights_only=True)
@@ -242,7 +247,9 @@ def predict_pairs(
     """Classify ``(sentence, aspect)`` pairs with a loaded artifact.
 
     Also returns each example's attention over its context tokens, which is
-    the main reason this architecture is worth its extra parameters.
+    the main reason this architecture is worth its extra parameters. For an
+    ablated model (``use_attention=False``) there is none, and ``attention``
+    is ``None`` rather than an empty or uniform list.
     """
     if not pairs:
         return []
@@ -255,7 +262,8 @@ def predict_pairs(
     model.eval()
     output = model(**batch)
     probs = torch.softmax(output["logits"].float(), dim=-1).cpu()
-    attention = output["attention"].cpu()
+    raw_attention = output.get("attention")
+    attention = raw_attention.cpu() if raw_attention is not None else None
 
     results = []
     for i, ((text, aspect), row) in enumerate(zip(pairs, probs)):
@@ -271,11 +279,17 @@ def predict_pairs(
                 "scores": {
                     name: float(row[j]) for j, name in enumerate(label_map.labels)
                 },
-                "attention": [
-                    {"token": tok, "weight": float(w)}
-                    for tok, w, keep in zip(tokens, attention[i].tolist(), context.tolist())
-                    if keep
-                ],
+                "attention": (
+                    [
+                        {"token": tok, "weight": float(w)}
+                        for tok, w, keep in zip(
+                            tokens, attention[i].tolist(), context.tolist()
+                        )
+                        if keep
+                    ]
+                    if attention is not None
+                    else None
+                ),
             }
         )
     return results

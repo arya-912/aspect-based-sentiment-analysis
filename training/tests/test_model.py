@@ -228,6 +228,124 @@ def test_predict_returns_class_ids(tiny_model, random_batch):
     assert set(predictions.tolist()) <= {0, 1, 2}
 
 
+# ---- ablation: use_attention=False ------------------------------------ #
+
+
+def test_ablation_builds_no_attention_module(tiny_model_no_attention):
+    assert tiny_model_no_attention.use_attention is False
+    assert tiny_model_no_attention.attention is None
+
+
+def test_ablation_keeps_attention_weights_out_of_the_state_dict(tiny_model_no_attention):
+    """Not merely bypassed -- absent, so a strict reload needs the same flag."""
+    keys = tiny_model_no_attention.state_dict().keys()
+    assert not [k for k in keys if k.startswith("attention.")]
+    assert [k for k in keys if k.startswith("classifier.")]
+
+
+def test_ablation_omits_attention_from_the_forward_output(
+    tiny_model_no_attention, random_batch
+):
+    """An omitted key, not a fabricated uniform distribution."""
+    output = tiny_model_no_attention(**random_batch(with_labels=False))
+    assert "attention" not in output
+    assert output["logits"].shape == (4, 3)
+
+
+def test_ablation_mean_pools_the_context(tiny_model_no_attention, random_batch):
+    """The control is exactly uniform attention: c = mean(h_i) over the context.
+
+    Checked by recomputing the head's input by hand from the same hidden
+    states and asserting the logits match, which pins the pooling rather than
+    just the output's shape.
+    """
+    model = tiny_model_no_attention
+    model.eval()
+    batch = random_batch(with_labels=False)
+
+    with torch.no_grad():
+        hidden = model.encoder(
+            input_ids=batch["input_ids"],
+            attention_mask=batch["attention_mask"],
+            token_type_ids=batch["token_type_ids"],
+        ).last_hidden_state
+        expected = model.classifier(
+            torch.cat(
+                [
+                    masked_mean(hidden, batch["context_mask"]),
+                    masked_mean(hidden, batch["aspect_mask"]),
+                    hidden[:, 0],
+                ],
+                dim=-1,
+            )
+        )
+        actual = model(**batch)["logits"]
+
+    assert torch.allclose(actual, expected, atol=1e-6)
+
+
+def test_ablation_drops_exactly_the_attention_parameters(
+    tiny_model, tiny_model_no_attention
+):
+    """Nothing else changes size, so a score difference is attributable."""
+    hidden_size = tiny_model.encoder.config.hidden_size
+    attention_params = sum(
+        p.numel() for p in AspectAttention(hidden_size).parameters()
+    )
+    difference = (
+        tiny_model.num_trainable_parameters()
+        - tiny_model_no_attention.num_trainable_parameters()
+    )
+    assert difference == attention_params
+
+
+def test_ablation_classifier_still_takes_three_vectors(tiny_model_no_attention):
+    """The head is untouched: [c ; a ; h_CLS] at the same width as before."""
+    hidden_size = tiny_model_no_attention.encoder.config.hidden_size
+    first_linear = next(
+        m for m in tiny_model_no_attention.classifier if isinstance(m, torch.nn.Linear)
+    )
+    assert first_linear.in_features == 3 * hidden_size
+
+
+def test_ablation_parameter_groups_cover_every_trainable_parameter(
+    tiny_model_no_attention,
+):
+    """``nn.ModuleList`` rejects None, so the head list has to be filtered."""
+    groups = tiny_model_no_attention.parameter_groups(lr=2e-5, weight_decay=0.01)
+    grouped = {id(p) for g in groups for p in g["params"]}
+    expected = {
+        id(p)
+        for name, p in tiny_model_no_attention.named_parameters()
+        if p.requires_grad and not name.startswith("encoder.pooler.")
+    }
+    assert grouped == expected
+
+
+def test_ablation_backward_reaches_the_head_and_the_encoder(
+    tiny_model_no_attention, random_batch
+):
+    tiny_model_no_attention(**random_batch())["loss"].backward()
+    parameters = dict(tiny_model_no_attention.named_parameters())
+    for name in ("classifier.1.weight", "classifier.4.weight"):
+        assert parameters[name].grad is not None
+        assert parameters[name].grad.abs().sum() > 0
+    embedding = tiny_model_no_attention.encoder.embeddings.word_embeddings.weight
+    assert embedding.grad is not None and embedding.grad.abs().sum() > 0
+
+
+def test_ablation_predict_still_returns_class_ids(tiny_model_no_attention, random_batch):
+    predictions = tiny_model_no_attention.predict(random_batch())
+    assert predictions.shape == (4,)
+    assert set(predictions.tolist()) <= {0, 1, 2}
+
+
+def test_attention_is_on_by_default(tiny_model):
+    """The ablation must be opt-in; the default run keeps its attention."""
+    assert tiny_model.use_attention is True
+    assert tiny_model.attention is not None
+
+
 # ---- optimizer groups ------------------------------------------------- #
 
 

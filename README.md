@@ -26,7 +26,7 @@ absa-project/
 │   ├── data/raw/           the four SemEval CSVs (gitignored)
 │   ├── data/processed/     generated splits (gitignored)
 │   ├── artifacts/          run outputs: weights, metrics, reports (gitignored)
-│   ├── configs/            default.yaml (+ quick.yaml for smoke tests)
+│   ├── configs/            default.yaml, quick.yaml (smoke), no_attention.yaml (ablation)
 │   ├── notebooks/          data exploration
 │   ├── tests/              pytest suite
 │   └── train.py            CLI: prepare | train | evaluate
@@ -181,6 +181,7 @@ file and per-command flags override individual values:
 
 ```bash
 python train.py --config configs/quick.yaml train   # 1 epoch, max_length 64
+python train.py --config configs/no_attention.yaml train   # ablation -> absa-noattn
 python train.py train --epochs 2 --batch-size 32 --version absa-v2
 python train.py train --model-name roberta-base --lr 2e-5
 python train.py evaluate --show-attention           # most-attended tokens
@@ -202,6 +203,12 @@ training: {epochs: 4, batch_size: 16, lr: 3e-5, weight_decay: 0.01,
 paths:    {raw_train: ..., official_test: ..., processed_dir: ..., artifacts_dir: ...}
 artifact: {version: absa-v1}
 ```
+
+Three configs ship: `default.yaml` produced `absa-v1`, `quick.yaml` is a
+one-epoch smoke test, and `no_attention.yaml` is the ablation — a verbatim copy
+of `default.yaml` with `model.use_attention: false` and its own artifact
+version. A test asserts the two stay identical in every other key, since the
+comparison is only meaningful while that holds.
 
 The loader coerces numeric keys after parsing. PyYAML only recognises a float
 when it sees *both* a decimal point and a signed exponent, so the entirely
@@ -263,7 +270,7 @@ This is the seam the `backend/` service will sit on.
 cd training && python -m pytest tests/ -q
 ```
 
-138 tests, all on CPU and all offline. Model and artifact tests run against a
+153 tests, all on CPU and all offline. Model and artifact tests run against a
 tiny randomly-initialised BERT (2 layers, hidden size 32) built from a config,
 so nothing is downloaded and the suite finishes in seconds — the architecture
 under test is the attention and the head, not the pretrained weights.
@@ -272,9 +279,9 @@ under test is the attention and the head, not the pretrained weights.
 | --- | --- |
 | `test_dataset.py` | `LabelMap`, the CSV quirks above, offset validation, split integrity (no sentence leakage, determinism per seed) |
 | `test_tokenizer.py` | mask shapes and semantics (disjoint, no specials or padding, correct multi-word spans), truncation, empty-aspect/text errors |
-| `test_model.py` | attention normalisation and masking, degenerate rows, backward reach, optimizer groups, metrics |
+| `test_model.py` | attention normalisation and masking, degenerate rows, backward reach, optimizer groups, metrics, the no-attention ablation |
 | `test_trainer.py` | epoch metrics, gradient clipping, best-checkpoint selection and restore, scheduler stepping, overfitting one batch |
-| `test_artifact.py` | every required file written, exact offline round-trip, each missing entry rejected, config loading |
+| `test_artifact.py` | every required file written, exact offline round-trip, each missing entry rejected, config loading, ablated round-trip |
 
 Tests needing the corpus skip cleanly when it is absent.
 
@@ -358,7 +365,7 @@ word is in the top three every time. They are not purely lexical, though:
 so tokens carrying clause structure get real weight too. The honest claim is
 that the attention gives the model a path to aspect-specific evidence and
 visibly concentrates on opinion words — not that it cleanly isolates one word
-per aspect. No ablation has been run, so its contribution is not yet measured.
+per aspect. The ablation below measures what it is worth.
 
 One thing that looks like a discrepancy but is not: `evaluate` reports a lower
 loss than the training run did (0.7117 vs 0.8510) while every metric matches to
@@ -372,6 +379,68 @@ for an aspect mentioned without evaluation) and the most under-represented
 (421 of 2081 training rows). Most of its errors go to `negative`: 48 of the 74
 missed neutrals, which is also why `negative` precision sits at 0.6450 despite
 0.8516 recall.
+
+### Ablation — does the attention earn its place?
+
+The architecture's whole claim is the aspect attention, so it is worth
+checking rather than asserting. `configs/no_attention.yaml` removes the
+`AspectAttention` module and pools the same context tokens uniformly instead
+— `c = mean(h_i)` over `context_mask`, which is exactly attention with
+`alpha_i = 1/|context|`. The head still receives `[c ; a ; h_CLS]` at the same
+width, so nothing is removed but the *learned weighting*.
+
+```bash
+cd training && python train.py --config configs/no_attention.yaml train
+```
+
+Same seed, same split, same hyperparameters, written to
+`artifacts/absa-noattn`. Only two keys differ from `default.yaml`, and a test
+enforces that.
+
+| | `absa-v1` (attention) | `absa-noattn` | difference |
+| --- | --- | --- | --- |
+| accuracy | **0.7884** | 0.7492 | **+0.0392** |
+| macro F1 | **0.7474** | 0.7047 | **+0.0427** |
+| weighted F1 | 0.7870 | 0.7497 | +0.0373 |
+| trainable parameters | 112,435,971 | 111,254,787 | +1,181,184 (+1.1%) |
+| best epoch | 3 | 2 | |
+| best val macro F1 | 0.7067 | 0.6404 | +0.0663 |
+
+Per-class F1 on the gold test set:
+
+| label | attention | ablation | difference |
+| --- | --- | --- | --- |
+| negative | 0.7340 | 0.6766 | +0.0574 |
+| neutral | 0.6169 | 0.5724 | +0.0445 |
+| positive | 0.8912 | 0.8650 | +0.0262 |
+
+The attention buys about **4 points of macro F1 for 1.1% more parameters**,
+and it buys most of it on the two hard classes: `positive`, which a majority
+guess already gets right, gains least.
+
+The gain is concentrated in precision rather than recall. Without attention
+the model leans harder on `negative` — it predicts that class 206 times
+against 169 with attention — which lifts `negative` recall to 0.8828 but drops
+its precision to 0.5485, and costs `neutral` and `positive` recall. Pooling
+the whole review uniformly means a sentence containing any negative language
+pulls negative for *every* aspect in it, which is precisely the failure the
+attention exists to avoid.
+
+Is 4 points more than noise? On these two runs, yes. Scoring the same 638 test
+examples pairwise, 43 are right only with attention and 18 only without
+(460 right both ways, 117 wrong both ways), which is an exact two-sided
+McNemar **p = 0.0019**.
+
+Two honest limits on that number. McNemar compares *these two trained models*
+on this test set; it says nothing about run-to-run variance, so it is not
+evidence that retraining with attention would beat retraining without it by
+this much, or at all. And each arm is a **single seed** — a proper claim needs
+several seeds per arm, which is hours of CPU this project has not spent. Read
+the result as one clean, significant comparison, not a settled effect size.
+
+Wall-clock training time is not comparable between the two runs: the machine
+was not quiet during the ablation, so its 3550s against 2550s reflects load,
+not architecture. The ablated model has strictly fewer parameters.
 
 ## Serving
 
@@ -466,6 +535,6 @@ cd ../frontend && npm run dev
 
 | Suite | Count | Needs an artifact? |
 | --- | --- | --- |
-| `training/tests` | 138 | no — tiny encoder built from config |
-| `backend/tests` | 45 | no — mocked registry |
+| `training/tests` | 153 | no — tiny encoder built from config |
+| `backend/tests` | 49 | no — mocked registry |
 | `frontend` | `tsc -b` + oxlint | no |

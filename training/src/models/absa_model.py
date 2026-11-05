@@ -103,6 +103,12 @@ class BertAspectAttention(nn.Module):
     Pass ``encoder=`` to supply an already-built backbone -- used to reload an
     artifact offline, and to run tests against a tiny randomly-initialised
     encoder without touching the network.
+
+    ``use_attention=False`` is the ablation control: the attention module is
+    not built, and ``c`` becomes the plain mean over the same context tokens.
+    The head still sees three vectors of the same width, so the only thing
+    removed is the *learned* weighting -- which is the claim the architecture
+    rests on. See ``configs/no_attention.yaml``.
     """
 
     def __init__(
@@ -112,6 +118,7 @@ class BertAspectAttention(nn.Module):
         dropout: float = 0.1,
         encoder: nn.Module | None = None,
         class_weights: torch.Tensor | None = None,
+        use_attention: bool = True,
     ) -> None:
         super().__init__()
         if encoder is None and not model_name:
@@ -124,9 +131,15 @@ class BertAspectAttention(nn.Module):
             self.encoder.config, "name_or_path", "unknown"
         )
         self.num_labels = num_labels
+        self.use_attention = bool(use_attention)
 
         hidden_size = self.encoder.config.hidden_size
-        self.attention = AspectAttention(hidden_size)
+        # Left unbuilt rather than built-and-bypassed when ablated, so the
+        # model genuinely has no attention parameters: they stay out of the
+        # state dict, out of the optimizer and out of the parameter count.
+        # That is what makes the comparison an ablation rather than a model
+        # carrying dead weights.
+        self.attention = AspectAttention(hidden_size) if self.use_attention else None
         self.classifier = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(3 * hidden_size, hidden_size),
@@ -171,7 +184,11 @@ class BertAspectAttention(nn.Module):
 
         Returns:
             ``{"logits": (B, num_labels), "attention": (B, T)}``, plus
-            ``"loss"`` when ``labels`` is given.
+            ``"loss"`` when ``labels`` is given. ``"attention"`` is **absent**
+            from the dict when the model was built with ``use_attention=False``
+            -- there is no distribution to report, and an omitted key is
+            honester than a fabricated uniform one. Callers read it with
+            ``output.get("attention")``.
         """
         encoder_kwargs: dict[str, torch.Tensor] = {
             "input_ids": input_ids,
@@ -196,12 +213,22 @@ class BertAspectAttention(nn.Module):
             context_mask = attention_mask
 
         aspect = masked_mean(hidden, aspect_mask.bool())            # (B, d)
-        context, weights = self.attention(hidden, aspect, context_mask.bool())
         cls_state = hidden[:, 0]                                    # (B, d)
+
+        weights: torch.Tensor | None = None
+        if self.attention is not None:
+            context, weights = self.attention(hidden, aspect, context_mask.bool())
+        else:
+            # The ablation: uniform weight over exactly the tokens attention
+            # would have scored. Equivalent to forcing alpha_i = 1/|context|,
+            # so the head's input keeps its shape and all three of its parts.
+            context = masked_mean(hidden, context_mask.bool())
 
         logits = self.classifier(torch.cat([context, aspect, cls_state], dim=-1))
 
-        output = {"logits": logits, "attention": weights}
+        output = {"logits": logits}
+        if weights is not None:
+            output["attention"] = weights
         if labels is not None:
             output["loss"] = self.loss_fn(logits, labels.view(-1))
         return output
@@ -244,7 +271,10 @@ class BertAspectAttention(nn.Module):
         would only allocate optimizer moments that never move.
         """
         no_decay = ("bias", "LayerNorm.weight", "layer_norm.weight")
-        head = nn.ModuleList([self.attention, self.classifier])
+        # self.attention is None under the ablation; ModuleList rejects None.
+        head = nn.ModuleList(
+            [m for m in (self.attention, self.classifier) if m is not None]
+        )
         groups: list[dict] = []
         for prefix, module, module_lr in (
             ("encoder", self.encoder, lr),
@@ -268,5 +298,6 @@ class BertAspectAttention(nn.Module):
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return (
             f"BertAspectAttention(model={self.model_name!r}, "
-            f"hidden={self.encoder.config.hidden_size}, labels={self.num_labels})"
+            f"hidden={self.encoder.config.hidden_size}, labels={self.num_labels}, "
+            f"attention={self.use_attention})"
         )

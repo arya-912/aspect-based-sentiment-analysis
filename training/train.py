@@ -177,6 +177,7 @@ def cmd_train(cfg: dict[str, Any], args: argparse.Namespace) -> int:
         num_labels=int(get(cfg, "model.num_labels")),
         dropout=float(get(cfg, "model.dropout", 0.1)),
         class_weights=class_weights,
+        use_attention=bool(get(cfg, "model.use_attention", True)),
     )
     LOGGER.info("model: %r (%s params)", model, f"{model.num_trainable_parameters():,}")
 
@@ -315,10 +316,15 @@ def cmd_evaluate(cfg: dict[str, Any], args: argparse.Namespace) -> int:
         print("\n=== attention over context (first few examples) ===")
         pairs = list(zip(test_df["text"].head(3), test_df["aspect"].head(3)))
         for result in predict_pairs(model, encoder, label_map, pairs):
-            top = sorted(result["attention"], key=lambda t: -t["weight"])[:6]
-            tokens = "  ".join(f"{t['token']}({t['weight']:.2f})" for t in top)
             print(f"\naspect={result['aspect']!r} -> {result['label']} "
-                  f"({result['confidence']:.3f})\n  {tokens}")
+                  f"({result['confidence']:.3f})")
+            if result["attention"] is None:
+                # An ablated artifact has no attention to show; saying so beats
+                # a TypeError on None.
+                print("  (this artifact was trained without attention)")
+                continue
+            top = sorted(result["attention"], key=lambda t: -t["weight"])[:6]
+            print("  " + "  ".join(f"{t['token']}({t['weight']:.2f})" for t in top))
     return 0
 
 
@@ -352,6 +358,11 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--seed", type=int)
     train.add_argument("--device", help="cuda | cpu (default: cuda when available)")
     train.add_argument("--prepare", action="store_true", help="re-split before training")
+    train.add_argument(
+        "--no-attention", dest="no_attention", action="store_true",
+        help="ablation: mean-pool the context instead of attending over it. "
+             "Use --version to write it somewhere other than the default run.",
+    )
     train.set_defaults(func=cmd_train)
 
     evaluate_cmd = subparsers.add_parser("evaluate", help="score a saved artifact")
@@ -391,6 +402,11 @@ def main(argv: list[str] | None = None) -> int:
         for flag, key in OVERRIDES.items()
         if getattr(args, flag, None) is not None
     }
+    # Handled apart from OVERRIDES because the flag's sense is inverted: the
+    # absence of --no-attention must leave the config's own value alone, not
+    # force it to True.
+    if getattr(args, "no_attention", False):
+        overrides["model.use_attention"] = False
     cfg = load_config(args.config, overrides)
     if overrides:
         LOGGER.info("config overrides: %s", overrides)
