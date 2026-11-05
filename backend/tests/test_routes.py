@@ -62,7 +62,13 @@ def test_predict_response_has_exactly_the_documented_fields(client):
         f"{PREFIX}/predict", json={"text": "Great screen.", "aspect": "screen"}
     ).json()
     assert set(body) == {
-        "aspect", "sentiment", "confidence", "scores", "attention", "model_version"
+        "aspect",
+        "sentiment",
+        "confidence",
+        "scores",
+        "attention",
+        "aspect_in_text",
+        "model_version",
     }
 
 
@@ -187,6 +193,81 @@ def test_predict_still_works_when_the_model_reports_no_attention(client, mocked_
     )
     assert response.status_code == 200
     assert response.json()["attention"] is None
+
+
+# ---- predict: aspect presence ----------------------------------------- #
+
+
+def test_predict_flags_an_aspect_that_is_in_the_review(client):
+    """The ordinary case: the aspect term is a span of the sentence."""
+    body = client.post(
+        f"{PREFIX}/predict", json={"text": "Great screen.", "aspect": "screen"}
+    ).json()
+
+    assert body["aspect_in_text"] is True
+
+
+def test_predict_flags_an_aspect_that_is_not_in_the_review(client, mocked_registry):
+    """Still a prediction, but marked as one the model was never trained to make.
+
+    Every training example took its aspect from a literal span of its
+    sentence, so this is off-distribution and a client must be able to say so.
+    """
+    mocked_registry._encoder = FakeEncoder(aspect_in_context=False)
+
+    response = client.post(
+        f"{PREFIX}/predict", json={"text": "Great screen.", "aspect": "keyboard"}
+    )
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body["aspect_in_text"] is False
+    assert body["sentiment"] in VALID_SENTIMENTS
+    assert body["confidence"] is not None
+
+
+def test_predict_requires_the_aspect_tokens_to_be_contiguous(client, mocked_registry):
+    """A run of tokens, not a bag of them.
+
+    An aspect whose words all appear but never side by side is not a span of
+    the review, so matching ids one at a time would report presence falsely.
+    """
+
+    class GappedAspectEncoder(FakeEncoder):
+        def encode(self, text, aspect, label=None):
+            example = super().encode(text, aspect, label)
+            start = 2 + self.context_width
+            # Both ids occur among the review tokens (2, 3, 4, 5), but the
+            # review never puts them next to each other.
+            example["input_ids"][start] = 2
+            example["input_ids"][start + 1] = 4
+            return example
+
+    mocked_registry._encoder = GappedAspectEncoder()
+
+    body = client.post(
+        f"{PREFIX}/predict", json={"text": "Great screen.", "aspect": "screen fine"}
+    ).json()
+
+    assert body["aspect_in_text"] is False
+
+
+def test_predict_aspect_flag_is_null_when_the_masks_are_missing(client, mocked_registry):
+    """Unknown beats guessed: a leaner encoder gets null, not a false verdict."""
+
+    class MasklessEncoder(FakeEncoder):
+        def encode(self, text, aspect, label=None):
+            example = super().encode(text, aspect, label)
+            del example["aspect_mask"]
+            return example
+
+    mocked_registry._encoder = MasklessEncoder()
+
+    response = client.post(
+        f"{PREFIX}/predict", json={"text": "Great screen.", "aspect": "screen"}
+    )
+    assert response.status_code == 200
+    assert response.json()["aspect_in_text"] is None
 
 
 # ---- predict: validation ---------------------------------------------- #

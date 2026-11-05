@@ -38,6 +38,16 @@ class PredictResponse(BaseModel):
             "the loaded model cannot report attention."
         ),
     )
+    aspect_in_text: bool | None = Field(
+        None,
+        description=(
+            "Whether the aspect's tokens occur verbatim in the review the "
+            "model saw. False means the prediction is outside the regime the "
+            "model was trained on -- every training aspect was a literal span "
+            "of its sentence -- so the result is a guess worth distrusting. "
+            "Null when it could not be determined."
+        ),
+    )
     model_version: str = Field(..., description="Artifact version that served this.")
 
 

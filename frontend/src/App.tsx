@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import HealthBanner from './components/HealthBanner'
 import AnalysisPage from './pages/AnalysisPage'
 import PerformancePage from './pages/PerformancePage'
 
@@ -46,6 +47,13 @@ export default function App() {
       </header>
 
       <main className="mx-auto max-w-3xl px-4 py-6">
+        {/*
+          Outside the tab switch, and above it: it reports whether the backend
+          can serve anything at all, which is true of both tabs and is the
+          first thing worth knowing when either one looks broken.
+        */}
+        <HealthBanner />
+
         {/*
           Remounted per tab via `key`, so the Performance page refetches each
           time it is opened rather than showing a stale snapshot.

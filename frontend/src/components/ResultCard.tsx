@@ -30,6 +30,10 @@ function formatConfidence(confidence: number | null): string {
 export default function ResultCard({ result }: ResultCardProps) {
   const { aspect, sentiment, confidence, scores, attention, model_version } = result
 
+  // Only an explicit `false` is a warning. `null` means the backend could not
+  // tell, and inventing a caveat from "unknown" would cry wolf.
+  const aspectMissing = result.aspect_in_text === false
+
   // Listed in class-id order (negative, neutral, positive) rather than by
   // value, so the rows do not reshuffle between predictions.
   const distribution = scores
@@ -45,6 +49,25 @@ export default function ResultCard({ result }: ResultCardProps) {
         </div>
         <SentimentBadge sentiment={sentiment} />
       </div>
+
+      {/*
+        Above the confidence on purpose. The model answers just as confidently
+        for an aspect that is absent as for one that is present, so the caveat
+        has to be read before the number, not after it.
+      */}
+      {aspectMissing && (
+        <div
+          role="note"
+          className="mt-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+        >
+          <p className="font-medium">“{aspect}” does not appear in this review</p>
+          <p className="mt-1">
+            Every example the model trained on used an aspect term taken
+            verbatim from its sentence, so this prediction is outside what it
+            learned. The confidence below is not trustworthy here.
+          </p>
+        </div>
+      )}
 
       <dl className="mt-4 grid grid-cols-2 gap-4 border-t border-gray-200 pt-4 text-sm">
         <div>

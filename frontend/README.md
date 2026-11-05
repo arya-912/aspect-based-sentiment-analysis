@@ -44,6 +44,7 @@ src/
 │   ├── SentimentBadge.tsx    coloured pill, always with its text label
 │   ├── BarRow.tsx            one labelled horizontal bar
 │   ├── AttentionBars.tsx     which review words the model weighted
+│   ├── HealthBanner.tsx      warns when the API is down or has no model
 │   ├── ResultCard.tsx        one prediction + distribution + attention
 │   └── ReviewForm.tsx        text + aspect input, validation, submit
 ├── pages/
@@ -88,6 +89,17 @@ page a `key`, so switching tabs remounts rather than showing a stale snapshot.
 The fetch is aborted on unmount, so a mid-flight request cannot set state after
 the component is gone.
 
+**The health banner separates two failures that look identical from in here.**
+The API being unreachable and the API being up with no model loaded both leave
+the app unable to predict, but they need different fixes. `axios` gives the
+first a `status` of 0; the second is a 200 with `{"status": "degraded"}`, which
+the backend answers deliberately instead of a 503 so the two stay
+distinguishable. `HealthBanner.tsx` renders nothing while healthy — including
+during its first request, so a working load never flashes a banner — and
+re-checks every 5s only while unhealthy, stopping for good on the first
+success. So a working app issues exactly one request, and starting the backend
+clears the banner without a reload.
+
 ## Verified
 
 - `npm run build` — clean under `strict`
@@ -100,3 +112,8 @@ the component is gone.
   `ResultCard` renders those sections only when they arrive. Bar widths are
   inline styles, not Tailwind classes, because Tailwind emits only the class
   names it finds written out in the source.
+- `aspect_in_text === false` renders a warning *above* the confidence figure,
+  since the model is just as confident about an aspect that is absent as one
+  that is present. Only an explicit `false` warns: `null` means the backend
+  could not tell, and a caveat built from "unknown" would cry wolf.
+- The six banner and warning colour classes are present in the built CSS.

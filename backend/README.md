@@ -5,7 +5,7 @@ sentence and an aspect term inside it; get the sentiment expressed about that
 aspect.
 
 ```
-POST /api/v1/predict   {"text": "...", "aspect": "..."}  -> sentiment, scores, attention
+POST /api/v1/predict   {"text": "...", "aspect": "..."}  -> sentiment, scores, attention, aspect_in_text
 GET  /api/v1/health                                      -> liveness + model readiness
 GET  /api/v1/model                                       -> which model, and how it scored
 ```
@@ -24,9 +24,9 @@ backend/
 │   │   └── response.py         TokenAttention, PredictResponse, Health/ModelMeta
 │   ├── services/
 │   │   ├── model_registry.py   singleton holding the loaded artifact
-│   │   └── predictor.py        encode -> forward -> softmax -> label + attention
+│   │   └── predictor.py        encode -> forward -> softmax -> label, attention, aspect check
 │   └── routes/sentiment.py     the three endpoints
-├── tests/                      45 tests, no artifact needed
+├── tests/                      49 tests, no artifact needed
 └── requirements.txt
 ```
 
@@ -104,11 +104,13 @@ it is logged at ERROR instead. Both have tests asserting nothing leaks.
 cd backend && python -m pytest tests/ -q
 ```
 
-45 tests, and **none of them need the artifact**. `conftest.py` provides a fake
+49 tests, and **none of them need the artifact**. `conftest.py` provides a fake
 model (fixed logits `[0.1, 0.2, 0.7]` and a deliberately uneven attention row),
 a fake encoder laying out `[CLS]` / review / aspect slots with a tiny fake
 tokenizer, and a fake label map, injected into the registry singleton and
-restored afterwards so no test leaks state into the next.
+restored afterwards so no test leaks state into the next. The fake encoder's
+aspect slots repeat ids from its review slots by default, as a real aspect term
+does; `FakeEncoder(aspect_in_context=False)` gives the off-distribution case.
 
 Covered: the happy path and exact confidence arithmetic, every label decoding,
 all validation rejections including boundary lengths and whitespace, 400/503/500
@@ -121,6 +123,11 @@ first with `##` pieces merged into whole words, attention restricted to the
 review tokens, the cap on how many are returned, and the two degraded paths —
 an encoder with no tokenizer and a model that reports no attention both yield
 `attention: null` with the prediction intact.
+
+`aspect_in_text` is covered on all four of its paths: an aspect present in the
+review, one absent from it (still a 200, with the prediction intact), one whose
+tokens all appear but never adjacently — a span, not a bag of words, so this is
+`false` — and a missing `aspect_mask`, which yields `null` rather than a guess.
 
 The doubles honour the same contracts the service depends on — the encoder's
 tensor dict, the model's `{"logits": ..., "attention": ...}`, the label map's

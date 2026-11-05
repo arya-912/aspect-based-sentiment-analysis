@@ -95,9 +95,19 @@ class FakeEncoder:
     the path the predictor turns into a 400.
     """
 
-    def __init__(self, max_length: int = MAX_LENGTH, context_width: int = 4) -> None:
+    def __init__(
+        self,
+        max_length: int = MAX_LENGTH,
+        context_width: int = 4,
+        aspect_in_context: bool = True,
+    ) -> None:
         self.max_length = max_length
         self.context_width = context_width
+        #: When True the aspect segment repeats ids from the review segment, as
+        #: it does for a real aspect term -- a literal span of its sentence.
+        #: False gives the aspect ids that appear nowhere in the review, the
+        #: off-distribution case ``aspect_in_text`` exists to flag.
+        self.aspect_in_context = aspect_in_context
         self.tokenizer = FakeTokenizer()
         self.calls: list[tuple[str, str]] = []
 
@@ -125,7 +135,15 @@ class FakeEncoder:
         for offset in range(width):
             example["input_ids"][1 + offset] = 2 + offset
         example["context_mask"][1 : 1 + width] = True
-        example["aspect_mask"][2 + width : 4 + width] = True
+
+        # The aspect segment, two tokens wide. Either the review's first two
+        # ids -- so the aspect is a genuine span of the review, which is what
+        # every training example looked like -- or ids found nowhere in it.
+        aspect_start = 2 + width
+        aspect_ids = (2, 3) if self.aspect_in_context else (90, 91)
+        for offset, token_id in enumerate(aspect_ids):
+            example["input_ids"][aspect_start + offset] = token_id
+        example["aspect_mask"][aspect_start : aspect_start + len(aspect_ids)] = True
         if label is not None:
             example["labels"] = torch.tensor(int(label), dtype=torch.long)
         return example

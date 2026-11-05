@@ -37,13 +37,13 @@ absa-project/
 │   │   ├── schemas/        request.py, response.py
 │   │   ├── services/       model_registry.py, predictor.py
 │   │   └── routes/         sentiment.py — predict | health | model
-│   ├── tests/              45 tests, no artifact needed
+│   ├── tests/              49 tests, no artifact needed
 │   └── requirements.txt
 └── frontend/            React + TypeScript UI (Vite)
     └── src/
         ├── types/          shapes mirroring the backend schemas
         ├── services/       api.ts — typed axios client
-        ├── components/     SentimentBadge, ResultCard, AttentionBars, ReviewForm
+        ├── components/     SentimentBadge, ResultCard, AttentionBars, HealthBanner, ReviewForm
         ├── pages/          AnalysisPage, PerformancePage
         └── App.tsx         tab toggle
 ```
@@ -402,6 +402,7 @@ $ curl -s -X POST localhost:8000/api/v1/predict \
     {"token": "is", "weight": 0.2201},
     {"token": "dim", "weight": 0.0567}
   ],
+  "aspect_in_text": true,
   "model_version": "absa-v1"
 }
 ```
@@ -412,6 +413,19 @@ folded back into whole words before they are returned — `unresponsive` arrives
 from BERT as `un ##res ##pon ##sive`, and four fragments would render as noise.
 `attention` is `null` rather than absent when the served model cannot report
 it, so a client always knows which case it is in.
+
+`aspect_in_text` says whether the aspect occurs verbatim in the review. It
+matters because the model answers just as confidently either way: send the
+sentence above with `"aspect":"keyboard"` and it returns **positive at 0.9803**
+about a keyboard the sentence never mentions. Every training example took its
+aspect from a literal span of its sentence, so an absent aspect is outside the
+regime the model learned, and a UI that shows the confidence without saying so
+is overclaiming. The check compares token ids rather than raw strings, so it
+agrees with what the model actually consumed — casing, punctuation and
+possessives are already normalised by the tokenizer (`OS` matches `os`,
+`hard drive` matches `hard drive's`), and an occurrence that truncation cut is
+correctly reported as absent. The frontend turns a `false` into a warning
+above the confidence figure.
 
 It imports the training package rather than vendoring a copy of the
 architecture, so the serving path cannot drift from what was trained. If the

@@ -36,6 +36,14 @@ export interface PredictResponse {
    * model reports no attention, so always check before rendering.
    */
   attention: TokenAttention[] | null
+  /**
+   * Whether the aspect's tokens occur verbatim in the review the model saw.
+   * `false` means the prediction is off-distribution -- every training aspect
+   * was a literal span of its sentence -- so the UI must say so rather than
+   * present the confidence at face value. `null` when the backend could not
+   * tell.
+   */
+  aspect_in_text: boolean | null
   model_version: string
 }
 

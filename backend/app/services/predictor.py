@@ -48,8 +48,9 @@ class PredictorService:
             aspect: the aspect term, normally a span of ``text``.
 
         Returns:
-            A :class:`PredictResponse`, carrying the full label distribution
-            and the most-attended review tokens alongside the chosen label.
+            A :class:`PredictResponse`, carrying the full label distribution,
+            the most-attended review tokens, and whether the aspect was
+            actually present, alongside the chosen label.
 
         Raises:
             HTTPException: 400 when the encoder rejects the input (for example
@@ -89,6 +90,7 @@ class PredictorService:
             confidence=round(float(probabilities[0, predicted_id].item()), 4),
             scores=self._scores(label_map, probabilities[0]),
             attention=self._attention(encoder, output, batch),
+            aspect_in_text=self._aspect_in_text(batch),
             model_version=self.registry.model_version,
         )
 
@@ -158,6 +160,45 @@ class PredictorService:
             TokenAttention(token=token, weight=round(min(max(weight, 0.0), 1.0), 4))
             for token, weight in merged[:MAX_ATTENTION_TOKENS]
         ]
+
+    @staticmethod
+    def _aspect_in_text(batch: dict[str, torch.Tensor]) -> bool | None:
+        """Whether the aspect occurs verbatim in the review the model saw.
+
+        Every training example took its aspect from a literal span of its
+        sentence, so an aspect that is absent puts the model outside the regime
+        it learned: aspect attention still produces a distribution, but it is
+        aligning the review against a phrase that is not there. A client that
+        shows the prediction without saying so is overclaiming.
+
+        Compared in token-id space rather than with a substring test on the raw
+        strings, because the ids are exactly what the model consumed. That
+        makes the answer agree with the model's view for free -- casing,
+        punctuation and possessives are already normalised by the tokenizer
+        (``OS`` matches ``os``, ``hard drive`` matches ``hard drive's``) -- and
+        it correctly reports False when truncation dropped the only occurrence,
+        since the aspect is then genuinely not in the context the model pooled
+        over.
+
+        Returns ``None`` when a mask is missing, rather than guessing.
+        """
+        ids = batch.get("input_ids")
+        context_mask = batch.get("context_mask")
+        aspect_mask = batch.get("aspect_mask")
+        if ids is None or context_mask is None or aspect_mask is None:
+            return None
+
+        context = ids[0][context_mask[0].bool()].tolist()
+        aspect = ids[0][aspect_mask[0].bool()].tolist()
+        if not aspect:
+            # The encoder rejects an aspect that tokenises to nothing, so this
+            # is unreachable with the real one; say "unknown" over "absent".
+            return None
+        span = len(aspect)
+        return any(
+            context[start : start + span] == aspect
+            for start in range(len(context) - span + 1)
+        )
 
     @staticmethod
     def _merge_wordpieces(pairs: list[tuple[str, float]]) -> list[tuple[str, float]]:
