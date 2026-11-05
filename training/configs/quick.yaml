@@ -1,4 +1,6 @@
-# Default ABSA training run.
+# Smoke-test run: 1 epoch at max_length 64, written to artifacts/absa-smoke.
+# Fast enough to prove the pipeline works end to end -- not a config to quote
+# results from. See configs/default.yaml for the run that produced absa-v1.
 # Paths are relative to the repository root, so these work from anywhere.
 seed: 42
 

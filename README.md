@@ -245,13 +245,16 @@ model, encoder, label_map, config = load_artifact("artifacts/absa-v1")
 predict_pairs(model, encoder, label_map, [
     ("Battery life is amazing but the screen is dim.", "screen"),
 ])
-# [{'label': 'negative', 'confidence': 0.91, 'scores': {...},
-#   'attention': [{'token': 'dim', 'weight': 0.31}, ...]}]
+# [{'aspect': 'screen', 'label': 'negative', 'confidence': 0.7228,
+#   'scores': {'negative': 0.7228, 'neutral': 0.0039, 'positive': 0.2732},
+#   'attention': [{'token': 'amazing', 'weight': 0.285}, ...]}]
 ```
 
 `load_artifact` returns the model already in `eval()` mode. Each prediction
 carries its attention over the context tokens — the main reason this
-architecture is worth its extra parameters, and the thing a UI can show.
+architecture is worth its extra parameters, and the thing a UI can show. Note
+that `PredictResponse` does not carry it yet, so the served API computes the
+attention on every request and discards it.
 
 This is the seam the `backend/` service will sit on.
 
@@ -289,50 +292,87 @@ only surfaces end to end:
   unweighted test fixture does not exercise this, so there is an explicit
   weighted round-trip test.
 
-## Baseline
+## Results
 
-`bert-base-uncased` + aspect attention, `max_length=64`, batch size 16,
-lr 3e-5, on the official gold test set (638 examples after dropping
-`conflict`):
+`bert-base-uncased` + aspect attention, trained with `configs/default.yaml`
+(4 epochs, `max_length=128`, batch size 16, lr 3e-5 encoder / 1e-4 head,
+class-weighted loss) and scored on the official gold test set (638 examples
+after dropping `conflict`). This is the run packaged as `artifacts/absa-v1`.
 
-| epochs | accuracy | macro F1 | weighted F1 |
-| --- | --- | --- | --- |
-| 1 | 0.7727 | 0.7255 | 0.7697 |
-| 2 | 0.7821 | 0.7447 | 0.7821 |
+| metric | value |
+| --- | --- |
+| accuracy | **0.7884** |
+| macro F1 | **0.7474** |
+| weighted F1 | 0.7870 |
 
-Per class, after 2 epochs:
+Per class:
 
 | label | precision | recall | f1 | support |
 | --- | --- | --- | --- | --- |
-| negative | 0.6395 | 0.8594 | 0.7333 | 128 |
-| neutral | 0.6736 | 0.5740 | 0.6198 | 169 |
-| positive | 0.9068 | 0.8563 | 0.8808 | 341 |
+| negative | 0.6450 | 0.8516 | 0.7340 | 128 |
+| neutral | 0.6835 | 0.5621 | 0.6169 | 169 |
+| positive | 0.9061 | 0.8768 | 0.8912 | 341 |
+
+Confusion matrix, rows = gold, columns = predicted:
+
+```
+           pred ->
+           negative   neutral  positive
+negative |      109        14         5
+ neutral |       48        95        26
+positive |       12        30       299
+```
+
+### Training history
+
+Per epoch, from `artifacts/absa-v1/config.json`:
+
+| epoch | train loss | train acc | val loss | val acc | val macro F1 | neutral F1 | seconds |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 0.8374 | 0.6228 | 0.8133 | 0.6897 | 0.6284 | 0.3579 | 586 |
+| 2 | 0.4630 | 0.8313 | 0.7772 | 0.7241 | 0.6612 | 0.4146 | 655 |
+| **3** | 0.2298 | 0.9178 | 0.9108 | 0.7802 | **0.7067** | 0.4267 | 658 |
+| 4 | 0.1153 | 0.9625 | 1.0943 | 0.7716 | 0.6836 | 0.3611 | 651 |
+
+Training loss falls monotonically while validation loss turns upward after
+epoch 2 — overfitting, unsurprising with 2081 training rows against 112M
+parameters. Validation macro F1 still peaks at epoch 3, so that is the
+checkpoint kept and packaged. Selecting on validation loss would have picked
+epoch 2; keeping the last epoch would have given the worst of the four. About
+42.5 minutes total on CPU, and `training.epochs: 4` is enough to find the peak
+and see it pass — there is no early stopping, so every configured epoch runs.
 
 ### What the attention learned
 
-`python train.py evaluate --show-attention`, after one epoch — the top-weighted
-context tokens for each aspect:
+`python train.py evaluate --show-attention` prints the top-weighted context
+tokens for the first few gold-test examples. Against `absa-v1`:
 
 | aspect | prediction | top attended context tokens |
 | --- | --- | --- |
-| `Boot time` | positive (0.81) | **super** 0.23, is 0.19, **fast** 0.16 |
-| `tech support` | negative (0.62) | **not** 0.15, would 0.12, **fix** 0.06 |
-| `Set up` | positive (0.79) | was 0.51, **easy** 0.37 |
+| `Boot time` | positive (0.992) | **super** 0.18, is 0.16, **fast** 0.13 |
+| `tech support` | negative (0.997) | would 0.25, **not** 0.23, support 0.06 |
+| `Set up` | positive (0.999) | **easy** 0.35, was 0.31, up 0.20 |
 
-The weights land on the sentiment-bearing words rather than spreading evenly,
-which is the whole reason the attention is there.
+The weights concentrate rather than spreading evenly, and the sentiment-bearing
+word is in the top three every time. They are not purely lexical, though:
+`would` outranks `not` on the second example and `was` takes 0.31 on the third,
+so tokens carrying clause structure get real weight too. The honest claim is
+that the attention gives the model a path to aspect-specific evidence and
+visibly concentrates on opinion words — not that it cleanly isolates one word
+per aspect. No ablation has been run, so its contribution is not yet measured.
 
 One thing that looks like a discrepancy but is not: `evaluate` reports a lower
-loss than the training run did (0.5482 vs 0.6302) while every metric matches to
+loss than the training run did (0.7117 vs 0.8510) while every metric matches to
 four decimals. Training weights the loss by inverse class frequency; a reloaded
 artifact has no class weights, because they describe the training split rather
 than the model and are deliberately not saved. The *metrics* matching exactly is
 what confirms the reload is faithful.
 
-`neutral` remains the weak class — it is both the vaguest category and
-under-represented, and most of its errors go to `negative`. These are
-short smoke runs at `max_length=64`; the default config (4 epochs,
-`max_length=128`) should be run before drawing conclusions.
+`neutral` remains the weak class — both the vaguest category (SemEval uses it
+for an aspect mentioned without evaluation) and the most under-represented
+(421 of 2081 training rows). Most of its errors go to `negative`: 48 of the 74
+missed neutrals, which is also why `negative` precision sits at 0.6450 despite
+0.8516 recall.
 
 ## Serving
 
@@ -353,7 +393,7 @@ GET  /api/v1/model
 $ curl -s -X POST localhost:8000/api/v1/predict \
     -H 'Content-Type: application/json' \
     -d '{"text":"The battery life is great but the screen is dim.","aspect":"screen"}'
-{"aspect":"screen","sentiment":"negative","confidence":0.9112,"model_version":"absa-v1"}
+{"aspect":"screen","sentiment":"negative","confidence":0.6317,"model_version":"absa-v1"}
 ```
 
 It imports the training package rather than vendoring a copy of the
