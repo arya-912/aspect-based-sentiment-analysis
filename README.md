@@ -37,13 +37,13 @@ absa-project/
 │   │   ├── schemas/        request.py, response.py
 │   │   ├── services/       model_registry.py, predictor.py
 │   │   └── routes/         sentiment.py — predict | health | model
-│   ├── tests/              39 tests, no artifact needed
+│   ├── tests/              45 tests, no artifact needed
 │   └── requirements.txt
 └── frontend/            React + TypeScript UI (Vite)
     └── src/
         ├── types/          shapes mirroring the backend schemas
         ├── services/       api.ts — typed axios client
-        ├── components/     SentimentBadge, ResultCard, ReviewForm
+        ├── components/     SentimentBadge, ResultCard, AttentionBars, ReviewForm
         ├── pages/          AnalysisPage, PerformancePage
         └── App.tsx         tab toggle
 ```
@@ -252,9 +252,8 @@ predict_pairs(model, encoder, label_map, [
 
 `load_artifact` returns the model already in `eval()` mode. Each prediction
 carries its attention over the context tokens — the main reason this
-architecture is worth its extra parameters, and the thing a UI can show. Note
-that `PredictResponse` does not carry it yet, so the served API computes the
-attention on every request and discards it.
+architecture is worth its extra parameters, and the thing the UI shows: the
+served `/predict` passes it through, merged back into whole words.
 
 This is the seam the `backend/` service will sit on.
 
@@ -393,8 +392,26 @@ GET  /api/v1/model
 $ curl -s -X POST localhost:8000/api/v1/predict \
     -H 'Content-Type: application/json' \
     -d '{"text":"The battery life is great but the screen is dim.","aspect":"screen"}'
-{"aspect":"screen","sentiment":"negative","confidence":0.6317,"model_version":"absa-v1"}
+{
+  "aspect": "screen",
+  "sentiment": "negative",
+  "confidence": 0.6317,
+  "scores": {"negative": 0.6317, "neutral": 0.0044, "positive": 0.3638},
+  "attention": [
+    {"token": "great", "weight": 0.2499},
+    {"token": "is", "weight": 0.2201},
+    {"token": "dim", "weight": 0.0567}
+  ],
+  "model_version": "absa-v1"
+}
 ```
+
+`scores` is the whole softmax distribution, and `attention` is the review's
+most-weighted words for this aspect, heaviest first. WordPiece pieces are
+folded back into whole words before they are returned — `unresponsive` arrives
+from BERT as `un ##res ##pon ##sive`, and four fragments would render as noise.
+`attention` is `null` rather than absent when the served model cannot report
+it, so a client always knows which case it is in.
 
 It imports the training package rather than vendoring a copy of the
 architecture, so the serving path cannot drift from what was trained. If the
@@ -436,5 +453,5 @@ cd ../frontend && npm run dev
 | Suite | Count | Needs an artifact? |
 | --- | --- | --- |
 | `training/tests` | 138 | no — tiny encoder built from config |
-| `backend/tests` | 39 | no — mocked registry |
+| `backend/tests` | 45 | no — mocked registry |
 | `frontend` | `tsc -b` + oxlint | no |

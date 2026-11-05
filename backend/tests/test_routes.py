@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from tests.conftest import LABELS, FakeModel
+from app.services.predictor import MAX_ATTENTION_TOKENS
+from tests.conftest import LABELS, FakeEncoder, FakeModel
 
 PREFIX = "/api/v1"
 VALID_SENTIMENTS = set(LABELS)
@@ -60,7 +61,9 @@ def test_predict_response_has_exactly_the_documented_fields(client):
     body = client.post(
         f"{PREFIX}/predict", json={"text": "Great screen.", "aspect": "screen"}
     ).json()
-    assert set(body) == {"aspect", "sentiment", "confidence", "model_version"}
+    assert set(body) == {
+        "aspect", "sentiment", "confidence", "scores", "attention", "model_version"
+    }
 
 
 def test_predict_passes_the_model_a_batch_of_one(client, fake_model, fake_encoder):
@@ -96,6 +99,94 @@ def test_predict_decodes_every_label(client, mocked_registry, winner, expected):
     ).json()
     assert body["sentiment"] == expected
     assert body["confidence"] > 0.9
+
+
+# ---- predict: scores and attention ------------------------------------ #
+
+
+def test_predict_returns_the_whole_label_distribution(client):
+    """Only the winner's probability used to survive the response."""
+    body = client.post(
+        f"{PREFIX}/predict", json={"text": "Great screen.", "aspect": "screen"}
+    ).json()
+
+    assert set(body["scores"]) == set(LABELS)
+    assert sum(body["scores"].values()) == pytest.approx(1.0, abs=1e-3)
+    assert body["scores"][body["sentiment"]] == pytest.approx(body["confidence"])
+    assert body["sentiment"] == max(body["scores"], key=body["scores"].get)
+
+
+def test_predict_attention_merges_wordpieces_and_sorts_by_weight(client):
+    """The fake context is un 0.1 / ##responsive 0.2 / but 0.5 / fine 0.2.
+
+    So the two pieces fold into one word carrying their summed share, and the
+    result comes back heaviest first rather than in sentence order.
+    """
+    body = client.post(
+        f"{PREFIX}/predict",
+        json={"text": "The track pad is unresponsive but fine.", "aspect": "track pad"},
+    ).json()
+
+    assert [token["token"] for token in body["attention"]] == ["but", "unresponsive", "fine"]
+    assert [token["weight"] for token in body["attention"]] == pytest.approx([0.5, 0.3, 0.2])
+
+
+def test_predict_attention_covers_only_the_review_tokens(client):
+    """``context_mask`` excludes the aspect segment and every special token."""
+    body = client.post(
+        f"{PREFIX}/predict", json={"text": "Great screen.", "aspect": "screen"}
+    ).json()
+
+    tokens = [token["token"] for token in body["attention"]]
+    assert not {"[CLS]", "[SEP]", "[PAD]"} & set(tokens)
+    assert all(weight > 0 for weight in (t["weight"] for t in body["attention"]))
+
+
+def test_predict_attention_is_capped(client, mocked_registry):
+    """A 128-slot distribution is not useful to a client; the head is."""
+    width = 19
+    attention = torch.zeros(1, 128)
+    attention[0, 1 : 1 + width] = torch.linspace(0.19, 0.01, width)
+    mocked_registry._encoder = FakeEncoder(context_width=width)
+    mocked_registry._model = FakeModel(attention=attention)
+
+    body = client.post(
+        f"{PREFIX}/predict", json={"text": "A much longer review sentence.", "aspect": "thing"}
+    ).json()
+
+    assert len(body["attention"]) == MAX_ATTENTION_TOKENS
+    weights = [token["weight"] for token in body["attention"]]
+    assert weights == sorted(weights, reverse=True)
+
+
+def test_predict_still_works_when_the_encoder_cannot_name_tokens(client, mocked_registry):
+    """Attention is a bonus, not a precondition: no tokenizer, no bars, still a prediction."""
+    mocked_registry._encoder.tokenizer = None
+
+    response = client.post(
+        f"{PREFIX}/predict", json={"text": "Great screen.", "aspect": "screen"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["attention"] is None
+    assert body["sentiment"] in VALID_SENTIMENTS
+
+
+def test_predict_still_works_when_the_model_reports_no_attention(client, mocked_registry):
+    """A model without an attention layer must not break the endpoint."""
+
+    class LogitsOnlyModel(FakeModel):
+        def __call__(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"logits": self.logits}
+
+    mocked_registry._model = LogitsOnlyModel()
+
+    response = client.post(
+        f"{PREFIX}/predict", json={"text": "Great screen.", "aspect": "screen"}
+    )
+    assert response.status_code == 200
+    assert response.json()["attention"] is None
 
 
 # ---- predict: validation ---------------------------------------------- #

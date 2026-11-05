@@ -1,8 +1,23 @@
-import type { PredictResponse } from '../types'
+import { SENTIMENTS, type PredictResponse, type Sentiment } from '../types'
+import AttentionBars from './AttentionBars'
+import BarRow from './BarRow'
 import SentimentBadge from './SentimentBadge'
 
 interface ResultCardProps {
   result: PredictResponse
+}
+
+/**
+ * Bar colour per polarity.
+ *
+ * Written out rather than interpolated, for the same reason as
+ * `SentimentBadge`: Tailwind only emits class names it finds literally in the
+ * source.
+ */
+const SCORE_BARS: Record<Sentiment, string> = {
+  negative: 'bg-red-400',
+  neutral: 'bg-yellow-400',
+  positive: 'bg-green-400',
 }
 
 /** Format a 0-1 probability as a percentage, or a dash when absent. */
@@ -13,7 +28,13 @@ function formatConfidence(confidence: number | null): string {
 
 /** One prediction, laid out as a bordered card. */
 export default function ResultCard({ result }: ResultCardProps) {
-  const { aspect, sentiment, confidence, model_version } = result
+  const { aspect, sentiment, confidence, scores, attention, model_version } = result
+
+  // Listed in class-id order (negative, neutral, positive) rather than by
+  // value, so the rows do not reshuffle between predictions.
+  const distribution = scores
+    ? SENTIMENTS.filter((label) => typeof scores[label] === 'number')
+    : []
 
   return (
     <div className="rounded-lg border border-gray-300 bg-white p-5">
@@ -35,6 +56,31 @@ export default function ResultCard({ result }: ResultCardProps) {
           <dd className="font-mono text-gray-900">{model_version}</dd>
         </div>
       </dl>
+
+      {scores && distribution.length > 0 && (
+        <div className="mt-4 border-t border-gray-200 pt-4">
+          <p className="text-xs uppercase tracking-wide text-gray-500">
+            Label distribution
+          </p>
+          <div className="mt-2 space-y-1.5">
+            {distribution.map((label) => (
+              <BarRow
+                key={label}
+                label={label}
+                value={formatConfidence(scores[label])}
+                fraction={scores[label]}
+                barClassName={SCORE_BARS[label]}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {attention && attention.length > 0 && (
+        <div className="mt-4 border-t border-gray-200 pt-4">
+          <AttentionBars attention={attention} />
+        </div>
+      )}
     </div>
   )
 }

@@ -12,12 +12,30 @@ export interface PredictRequest {
   aspect: string
 }
 
+/** One review token and the share of attention it received. */
+export interface TokenAttention {
+  /** A whole word: the backend folds WordPiece `##` pieces back together. */
+  token: string
+  /** Attention weight in 0-1, summed over the word's pieces. */
+  weight: number
+}
+
 /** Response of `POST /api/v1/predict`. */
 export interface PredictResponse {
   aspect: string
   sentiment: Sentiment
   /** Softmax probability of the chosen label; null if the backend omits it. */
   confidence: number | null
+  /**
+   * Softmax probability of every label, keyed by label name. Null when the
+   * backend cannot line its label names up with the logits.
+   */
+  scores: Record<string, number> | null
+  /**
+   * The most-attended review tokens, heaviest first. Null when the served
+   * model reports no attention, so always check before rendering.
+   */
+  attention: TokenAttention[] | null
   model_version: string
 }
 

@@ -7,6 +7,19 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+class TokenAttention(BaseModel):
+    """One review token and the share of attention it received.
+
+    WordPiece continuation pieces are folded back into their parent word, so
+    ``token`` is a whole word rather than ``un`` / ``##responsive``.
+    """
+
+    token: str = Field(..., description="A token from the review segment.")
+    weight: float = Field(
+        ..., ge=0.0, le=1.0, description="Attention weight, summed over the word's pieces."
+    )
+
+
 class PredictResponse(BaseModel):
     """The sentiment expressed about one aspect."""
 
@@ -14,6 +27,16 @@ class PredictResponse(BaseModel):
     sentiment: str = Field(..., description="negative | neutral | positive")
     confidence: float | None = Field(
         None, ge=0.0, le=1.0, description="Softmax probability of the chosen label."
+    )
+    scores: dict[str, float] | None = Field(
+        None, description="Softmax probability of every label, keyed by label name."
+    )
+    attention: list[TokenAttention] | None = Field(
+        None,
+        description=(
+            "The most-attended review tokens, highest weight first. Null when "
+            "the loaded model cannot report attention."
+        ),
     )
     model_version: str = Field(..., description="Artifact version that served this.")
 

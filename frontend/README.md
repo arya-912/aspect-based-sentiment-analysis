@@ -42,7 +42,9 @@ src/
 ├── services/api.ts           axios client; throws a typed error
 ├── components/
 │   ├── SentimentBadge.tsx    coloured pill, always with its text label
-│   ├── ResultCard.tsx        one prediction
+│   ├── BarRow.tsx            one labelled horizontal bar
+│   ├── AttentionBars.tsx     which review words the model weighted
+│   ├── ResultCard.tsx        one prediction + distribution + attention
 │   └── ReviewForm.tsx        text + aspect input, validation, submit
 ├── pages/
 │   ├── AnalysisPage.tsx      form + latest result
@@ -94,3 +96,7 @@ the component is gone.
   `ModelMetaResponse` key sets, `confidence` within [0, 1], `per_class` covering
   all three labels, the 422 and 404 error bodies `api.ts` parses, and the CORS
   header for `localhost:5173`.
+- `scores` and `attention` are both nullable on `PredictResponse`, so
+  `ResultCard` renders those sections only when they arrive. Bar widths are
+  inline styles, not Tailwind classes, because Tailwind emits only the class
+  names it finds written out in the source.

@@ -32,21 +32,51 @@ LABELS = ("negative", "neutral", "positive")
 #: Deterministic logits: positive (index 2) always wins.
 FAKE_LOGITS = torch.tensor([[0.1, 0.2, 0.7]])
 
+#: A tiny vocabulary for the fake tokenizer. Ids 2-5 are the default context
+#: window, and include a ``##`` piece so the predictor's word-merging runs on
+#: the happy path rather than only in a special-case test.
+FAKE_VOCAB = ("[PAD]", "[CLS]", "un", "##responsive", "but", "fine", "[SEP]")
+
+#: Attention over the default 4-token context window. Deliberately uneven, so
+#: a test can tell sorted output from input order: the pieces are
+#: un 0.1 / ##responsive 0.2 / but 0.5 / fine 0.2, which merge and sort to
+#: but 0.5, unresponsive 0.3, fine 0.2.
+FAKE_ATTENTION = torch.zeros(1, MAX_LENGTH)
+FAKE_ATTENTION[0, 1:5] = torch.tensor([0.1, 0.2, 0.5, 0.2])
+
+
+class FakeTokenizer:
+    """The one tokenizer method the predictor needs to name a token id.
+
+    Ids outside the tiny vocabulary get a generated name, so a test can widen
+    the context window without extending the vocabulary.
+    """
+
+    def convert_ids_to_tokens(self, ids: Any) -> list[str]:
+        out = []
+        for value in ids:
+            index = int(value)
+            out.append(FAKE_VOCAB[index] if index < len(FAKE_VOCAB) else f"tok{index}")
+        return out
+
 
 class FakeModel:
     """Stands in for ``BertAspectAttention``.
 
     Returns fixed logits so the predicted label and confidence are
-    predictable, and echoes the key the real model emits alongside them.
+    predictable, and the attention the real model emits alongside them.
     """
 
-    def __init__(self, logits: torch.Tensor | None = None) -> None:
+    def __init__(
+        self, logits: torch.Tensor | None = None, attention: torch.Tensor | None = None
+    ) -> None:
         self.logits = logits if logits is not None else FAKE_LOGITS
+        self.attention = attention if attention is not None else FAKE_ATTENTION
         self.calls: list[dict[str, torch.Tensor]] = []
 
     def __call__(self, **kwargs: torch.Tensor) -> dict[str, torch.Tensor]:
         self.calls.append(kwargs)
-        return {"logits": self.logits, "attention": torch.zeros(1, MAX_LENGTH)}
+        return {"logits": self.logits, "attention": self.attention}
 
     def parameters(self):
         """The real model has parameters; this one has none on purpose, which
@@ -65,8 +95,10 @@ class FakeEncoder:
     the path the predictor turns into a 400.
     """
 
-    def __init__(self, max_length: int = MAX_LENGTH) -> None:
+    def __init__(self, max_length: int = MAX_LENGTH, context_width: int = 4) -> None:
         self.max_length = max_length
+        self.context_width = context_width
+        self.tokenizer = FakeTokenizer()
         self.calls: list[tuple[str, str]] = []
 
     def encode(
@@ -85,8 +117,15 @@ class FakeEncoder:
             "context_mask": torch.zeros(self.max_length, dtype=torch.bool),
             "aspect_mask": torch.zeros(self.max_length, dtype=torch.bool),
         }
-        example["context_mask"][1:5] = True
-        example["aspect_mask"][6:8] = True
+        # Lay the context out like the real encoder: [CLS] at 0, then the
+        # review's tokens, then the aspect segment. Distinct ids, so the fake
+        # tokenizer names each slot differently and the masks stay disjoint.
+        width = self.context_width
+        example["input_ids"][0] = 1
+        for offset in range(width):
+            example["input_ids"][1 + offset] = 2 + offset
+        example["context_mask"][1 : 1 + width] = True
+        example["aspect_mask"][2 + width : 4 + width] = True
         if label is not None:
             example["labels"] = torch.tensor(int(label), dtype=torch.long)
         return example
