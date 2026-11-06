@@ -122,6 +122,11 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ValueError(
             f"model.num_labels must be >= 2, got {get(cfg, 'model.num_labels')}"
         )
+    keep = get(cfg, "training.keep_checkpoint")
+    if keep is not None and not isinstance(keep, bool):
+        raise ValueError(
+            f"training.keep_checkpoint must be true or false, got {keep!r}"
+        )
     labels = get(cfg, "data.labels")
     if labels is not None and len(labels) != int(get(cfg, "model.num_labels")):
         raise ValueError(

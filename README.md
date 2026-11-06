@@ -192,6 +192,7 @@ python train.py --config configs/no_attention.yaml train   # ablation -> absa-no
 python train.py train --epochs 2 --batch-size 32 --version absa-v2
 python train.py train --epochs 10 --patience 2       # stop once val macro F1 stalls
 python train.py train --patience 0                   # run every configured epoch
+python train.py train --keep-checkpoint              # keep best.pt after the run
 python train.py train --model-name roberta-base --lr 2e-5
 python train.py evaluate --show-attention           # most-attended tokens
 python train.py evaluate --artifact artifacts/absa-v1 --out-dir /tmp/report
@@ -209,7 +210,7 @@ seed: 42
 model:    {name: bert-base-uncased, max_length: 128, dropout: 0.1, num_labels: 3}
 training: {epochs: 4, batch_size: 16, lr: 3e-5, weight_decay: 0.01,
            warmup_ratio: 0.1, max_grad_norm: 1.0, val_fraction: 0.1,
-           early_stopping_patience: 2}
+           early_stopping_patience: 2, keep_checkpoint: false}
 paths:    {raw_train: ..., official_test: ..., processed_dir: ..., artifacts_dir: ...}
 artifact: {version: absa-v1}
 ```
@@ -237,7 +238,7 @@ A run writes `training/artifacts/<version>/`:
 | `config.json` | every hyperparameter, plus run id, best epoch, library versions |
 | `label_map.json` | `label2id` / `id2label` |
 | `metrics.json` | accuracy, macro F1, per-class, confusion matrix |
-| `best.pt` | the trainer's running best checkpoint |
+| `best.pt` | the trainer's crash net *during* a run — removed when it finishes |
 | `validation_metrics.{json,txt,md}` | best-epoch validation report |
 
 `encoder/` holds the config and **not** a second copy of the weights: every
@@ -245,6 +246,20 @@ weight is already in `model.pt`, so reconstruction is `AutoModel.from_config`
 followed by a strict `load_state_dict`. That makes `load_artifact` work with
 no network and without duplicating ~440MB of parameters — there is a test that
 blocks `socket.connect` for the duration of a load to keep it that way.
+
+`best.pt` exists for the same reason, and does not outlive the run. While
+training is in progress it is the only copy of the best weights on disk, so a
+process that dies at epoch 3 of 4 loses nothing. The moment `build_artifact`
+writes those same weights to `model.pt` it becomes a byte-identical 450MB
+duplicate that nothing reads — `load_artifact` only ever opens `model.pt` — so
+the run deletes it, after checking `model.pt` is actually there. Its metadata
+is not lost either: the best epoch and its score are already in `config.json`
+as `best_epoch` and in `history`. That halves an artifact: `absa-v1` goes from
+859MiB to 430MiB, `absa-noattn` from 850MiB to 425MiB.
+`keep_checkpoint: true`, or `--keep-checkpoint`, keeps it. A test asserts the
+two files hold identical tensors, so if a change ever made the artifact hold
+something else, deleting the checkpoint would stop being safe and the suite
+would say so.
 
 The checkpoint kept is the best epoch by **validation macro F1**, not the last
 and not accuracy: `neutral` is the minority class, so accuracy can climb while
@@ -303,7 +318,7 @@ relative to the working directory. It needs the raw CSVs and
 cd training && python -m pytest tests/ -q
 ```
 
-170 tests, all on CPU and all offline. Model and artifact tests run against a
+179 tests, all on CPU and all offline. Model and artifact tests run against a
 tiny randomly-initialised BERT (2 layers, hidden size 32) built from a config,
 so nothing is downloaded and the suite finishes in seconds — the architecture
 under test is the attention and the head, not the pretrained weights.
@@ -313,7 +328,7 @@ under test is the attention and the head, not the pretrained weights.
 | `test_dataset.py` | `LabelMap`, the CSV quirks above, offset validation, split integrity (no sentence leakage, determinism per seed) |
 | `test_tokenizer.py` | mask shapes and semantics (disjoint, no specials or padding, correct multi-word spans), truncation, empty-aspect/text errors |
 | `test_model.py` | attention normalisation and masking, degenerate rows, backward reach, optimizer groups, metrics, the no-attention ablation |
-| `test_trainer.py` | epoch metrics, gradient clipping, best-checkpoint selection and restore, scheduler stepping, overfitting one batch, early stopping |
+| `test_trainer.py` | epoch metrics, gradient clipping, best-checkpoint selection and restore, scheduler stepping, overfitting one batch, early stopping, discarding the checkpoint |
 | `test_artifact.py` | every required file written, exact offline round-trip, each missing entry rejected, config loading, ablated round-trip |
 
 Tests needing the corpus skip cleanly when it is absent.
@@ -584,6 +599,6 @@ cd ../frontend && npm run dev
 
 | Suite | Count | Needs an artifact? |
 | --- | --- | --- |
-| `training/tests` | 170 | no — tiny encoder built from config |
+| `training/tests` | 179 | no — tiny encoder built from config |
 | `backend/tests` | 49 | no — mocked registry |
 | `frontend` | `tsc -b` + oxlint | no |

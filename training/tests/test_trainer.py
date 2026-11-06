@@ -194,6 +194,51 @@ def test_fit_stores_the_best_validation_metrics(tiny_model, loaders):
     assert "confusion_matrix" in metrics
 
 
+# ---- discarding the checkpoint ---------------------------------------- #
+
+
+def test_discard_checkpoint_removes_the_file(tiny_model, loaders, tmp_path):
+    trainer = make_trainer(tiny_model, loaders, tmp_path=tmp_path)
+    trainer.fit(1)
+    path = tmp_path / CHECKPOINT_FILE
+    assert path.is_file()
+
+    removed = trainer.discard_checkpoint()
+
+    assert removed == path
+    assert not path.exists()
+
+
+def test_discard_checkpoint_is_idempotent(tiny_model, loaders, tmp_path):
+    """Calling it twice, or on a run that never checkpointed, is not an error."""
+    trainer = make_trainer(tiny_model, loaders, tmp_path=tmp_path)
+    trainer.fit(1)
+
+    assert trainer.discard_checkpoint() is not None
+    assert trainer.discard_checkpoint() is None
+
+
+def test_discard_checkpoint_without_a_checkpoint_dir(tiny_model, loaders):
+    trainer = make_trainer(tiny_model, loaders)
+    assert trainer.checkpoint_dir is None
+    assert trainer.discard_checkpoint() is None
+
+
+def test_discard_checkpoint_leaves_the_weights_in_memory(tiny_model, loaders, tmp_path):
+    """Deleting the file must not disturb the model or the best state."""
+    trainer = make_trainer(tiny_model, loaders, tmp_path=tmp_path)
+    trainer.fit(1)
+    before = {k: v.clone() for k, v in tiny_model.state_dict().items()}
+    best_epoch, best_f1 = trainer.best_epoch, trainer.best_macro_f1
+
+    trainer.discard_checkpoint()
+
+    assert trainer.best_state is not None
+    assert (trainer.best_epoch, trainer.best_macro_f1) == (best_epoch, best_f1)
+    for key, value in tiny_model.state_dict().items():
+        assert torch.allclose(before[key], value), key
+
+
 # ---- early stopping --------------------------------------------------- #
 
 

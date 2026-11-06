@@ -251,6 +251,65 @@ def test_predict_pairs_on_no_input():
     assert predict_pairs(None, None, None, []) == []
 
 
+# ---- best.pt is a duplicate of model.pt ------------------------------- #
+
+
+def test_the_checkpoint_and_the_artifact_hold_identical_weights(
+    artifact_cfg, tiny_model, tiny_encoder, metrics, random_batch, tmp_path
+):
+    """Why deleting ``best.pt`` after a run is safe, pinned as an invariant.
+
+    ``cmd_train`` packages ``trainer.best_state``, which is exactly what the
+    trainer wrote to ``best.pt``. If a future change made the artifact hold
+    something else, dropping the checkpoint would start losing weights -- so
+    the equality is asserted here rather than assumed at the call site.
+    """
+    from src.trainer import CHECKPOINT_FILE, Trainer
+
+    loaders = [random_batch(batch_size=4, seq_len=16) for _ in range(2)]
+    checkpoint_dir = tmp_path / "run"
+    trainer = Trainer(
+        model=tiny_model,
+        train_loader=loaders,
+        val_loader=loaders,
+        optimizer=torch.optim.AdamW(tiny_model.parameters(), lr=1e-3),
+        device="cpu",
+        config={
+            "max_grad_norm": 1.0,
+            "label_map": LabelMap(LABELS),
+            "checkpoint_dir": str(checkpoint_dir),
+        },
+    )
+    trainer.fit(2)
+
+    directory = build_artifact(
+        cfg=artifact_cfg,
+        run_id="dedup-1",
+        model=tiny_model,
+        encoder=tiny_encoder,
+        label_map=LabelMap(LABELS),
+        test_metrics=metrics,
+        best_epoch=trainer.best_epoch,
+        state_dict=trainer.best_state,
+    )
+
+    checkpoint = torch.load(
+        checkpoint_dir / CHECKPOINT_FILE, map_location="cpu", weights_only=False
+    )["state_dict"]
+    packaged = torch.load(directory / MODEL_FILE, map_location="cpu", weights_only=True)
+
+    assert checkpoint.keys() == packaged.keys()
+    for key, value in packaged.items():
+        assert torch.equal(checkpoint[key], value), key
+
+    # And the artifact alone is enough to rebuild the run.
+    trainer.discard_checkpoint()
+    assert not (checkpoint_dir / CHECKPOINT_FILE).exists()
+    reloaded, _, _, _ = load_artifact(directory, device="cpu")
+    for key, value in reloaded.state_dict().items():
+        assert torch.equal(packaged[key], value.cpu()), key
+
+
 # ---- ablated artifacts ------------------------------------------------ #
 
 
@@ -373,7 +432,7 @@ def test_the_ablation_config_differs_from_the_default_only_as_intended():
                 "model.num_labels", "training.epochs", "training.batch_size",
                 "training.lr", "training.weight_decay", "training.warmup_ratio",
                 "training.max_grad_norm", "training.val_fraction",
-                "training.early_stopping_patience",
+                "training.early_stopping_patience", "training.keep_checkpoint",
                 "data.class_weighting", "data.labels", "optim.head_lr",
                 "optim.eval_batch_size", "paths.raw_train", "paths.official_test",
                 "paths.processed_dir", "paths.artifacts_dir"):
@@ -490,6 +549,19 @@ def test_validate_config_rejects_a_negative_patience():
     cfg = load_config()
     set_in(cfg, "training.early_stopping_patience", -1)
     with pytest.raises(ValueError, match="early_stopping_patience"):
+        validate_config(cfg)
+
+
+def test_default_config_discards_the_checkpoint():
+    assert get(load_config(), "training.keep_checkpoint") is False
+
+
+@pytest.mark.parametrize("value", ["yes", 1, "false"])
+def test_validate_config_rejects_a_non_boolean_keep_checkpoint(value):
+    """``keep_checkpoint: "false"`` is truthy in Python -- a silent footgun."""
+    cfg = load_config()
+    set_in(cfg, "training.keep_checkpoint", value)
+    with pytest.raises(ValueError, match="keep_checkpoint"):
         validate_config(cfg)
 
 

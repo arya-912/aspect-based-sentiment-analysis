@@ -294,6 +294,27 @@ class Trainer:
             return list(self.label_map.labels)
         return [str(i) for i in range(getattr(self.model, "num_labels", 3))]
 
+    def discard_checkpoint(self) -> Path | None:
+        """Delete the mid-training checkpoint.
+
+        ``best.pt`` is a crash net: while a run is in progress it is the only
+        copy of the best weights on disk. Once those weights are packaged into
+        the artifact's ``model.pt`` it is a byte-identical duplicate of it --
+        449MB for ``bert-base-uncased`` -- and nothing reads it, so the caller
+        drops it once the artifact is written.
+
+        Returns:
+            The path removed, or ``None`` if there was nothing to remove.
+        """
+        if self.checkpoint_dir is None:
+            return None
+        path = self.checkpoint_dir / CHECKPOINT_FILE
+        if not path.is_file():
+            return None
+        path.unlink()
+        LOGGER.info("removed %s (its weights are in the artifact)", path)
+        return path
+
     def _save_checkpoint(self, epoch: int) -> Path | None:
         """Write the current best weights, if a checkpoint dir was configured."""
         if self.checkpoint_dir is None:

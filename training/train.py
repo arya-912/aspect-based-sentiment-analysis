@@ -26,7 +26,7 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import get_linear_schedule_with_warmup
 
-from src.artifact import build_artifact, load_artifact, predict_pairs
+from src.artifact import MODEL_FILE, build_artifact, load_artifact, predict_pairs
 from src.config import (
     artifact_dir,
     describe,
@@ -53,7 +53,7 @@ from src.evaluation.evaluate import (
 )
 from src.models.absa_model import BertAspectAttention
 from src.preprocessing.tokenizer import ABSAEncoder
-from src.trainer import Trainer, resolve_device, set_seed
+from src.trainer import CHECKPOINT_FILE, Trainer, resolve_device, set_seed
 
 LOGGER = logging.getLogger("absa.train")
 
@@ -263,6 +263,20 @@ def cmd_train(cfg: dict[str, Any], args: argparse.Namespace) -> int:
             title=f"Validation (best epoch {trainer.best_epoch})",
         )
 
+    # The artifact was built from trainer.best_state, which is exactly what
+    # best.pt holds, so the checkpoint is now a duplicate of model.pt. Checked
+    # rather than assumed: if model.pt is somehow absent the crash net stays.
+    if bool(get(cfg, "training.keep_checkpoint", False)):
+        LOGGER.info("keeping %s (training.keep_checkpoint)", CHECKPOINT_FILE)
+    elif (directory / MODEL_FILE).is_file():
+        removed = trainer.discard_checkpoint()
+        if removed:
+            print(f"removed    : {removed.name} (duplicate of {MODEL_FILE})")
+    else:
+        LOGGER.warning(
+            "keeping %s: no %s in %s", CHECKPOINT_FILE, MODEL_FILE, directory
+        )
+
     print(f"artifact   : {directory}")
     print(f"best epoch : {trainer.best_epoch} (val macro_f1={trainer.best_macro_f1:.4f})")
     if trainer.stopped_early:
@@ -369,6 +383,10 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--device", help="cuda | cpu (default: cuda when available)")
     train.add_argument("--prepare", action="store_true", help="re-split before training")
     train.add_argument(
+        "--keep-checkpoint", dest="keep_checkpoint", action="store_true",
+        help="keep best.pt after the run instead of deleting the duplicate",
+    )
+    train.add_argument(
         "--no-attention", dest="no_attention", action="store_true",
         help="ablation: mean-pool the context instead of attending over it. "
              "Use --version to write it somewhere other than the default run.",
@@ -418,6 +436,9 @@ def main(argv: list[str] | None = None) -> int:
     # force it to True.
     if getattr(args, "no_attention", False):
         overrides["model.use_attention"] = False
+    # Same reason: absent must leave the config's value alone, not force False.
+    if getattr(args, "keep_checkpoint", False):
+        overrides["training.keep_checkpoint"] = True
     cfg = load_config(args.config, overrides)
     if overrides:
         LOGGER.info("config overrides: %s", overrides)
