@@ -1,0 +1,13 @@
+# Extras for training/notebooks/. Install on top of requirements.txt:
+#
+#   pip install -r requirements.txt -r requirements-notebook.txt
+#
+# The notebook is committed with its outputs, so these are only needed to
+# re-run it, not to read it.
+ipykernel>=6.29
+nbformat>=5.9
+nbclient>=0.9           # headless re-execution
+nbconvert>=7.14         # jupyter nbconvert --execute --inplace
+ipywidgets>=8.1         # tqdm's notebook progress bars; without it tqdm
+                        # warns on import and the warning lands in cell 1
+# To open it interactively, add one of: jupyterlab  |  notebook

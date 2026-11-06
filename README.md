@@ -27,7 +27,7 @@ absa-project/
 │   ├── data/processed/     generated splits (gitignored)
 │   ├── artifacts/          run outputs: weights, metrics, reports (gitignored)
 │   ├── configs/            default.yaml, quick.yaml (smoke), no_attention.yaml (ablation)
-│   ├── notebooks/          data exploration
+│   ├── notebooks/          data exploration, committed with its outputs
 │   ├── tests/              pytest suite
 │   └── train.py            CLI: prepare | train | evaluate
 ├── backend/             FastAPI inference service
@@ -164,6 +164,13 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r training/requirements.txt
 ```
 
+To re-run the exploration notebook as well, add its extras — it is committed
+with its outputs, so this is only needed to re-execute it:
+
+```bash
+pip install -r training/requirements-notebook.txt
+```
+
 ## Usage
 
 Three subcommands, each usable on its own:
@@ -266,6 +273,29 @@ architecture is worth its extra parameters, and the thing the UI shows: the
 served `/predict` passes it through, merged back into whole words.
 
 This is the seam the `backend/` service will sit on.
+
+## Notebook
+
+`training/notebooks/01_data_exploration.ipynb` walks the corpus the training
+package loads: class balance, aspects per sentence, mixed-polarity sentences,
+length distributions, the grouped split, and what the encoder actually hands
+the model — ending with one forward pass through an untrained
+`BertAspectAttention` to show the attention's shape.
+
+It is committed **with its outputs**, so it reads without a kernel, and the
+figures in it are reproducible rather than remembered: 2313 usable training
+rows over 1456 unique sentences, the 2081/232 split with zero overlapping
+sentences, and the two segment masks shown to be disjoint and free of special
+tokens. Re-run it headlessly with:
+
+```bash
+cd training/notebooks
+jupyter nbconvert --execute --inplace 01_data_exploration.ipynb
+```
+
+Run it from `training/notebooks/` — the first cell locates the `src` package
+relative to the working directory. It needs the raw CSVs and
+`bert-base-uncased` (cached or via the hub).
 
 ## Tests
 
