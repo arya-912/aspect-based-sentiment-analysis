@@ -70,6 +70,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
+    # The factory exists so a test can build an app with its own Settings;
+    # a route that reached for the process-wide get_settings() would ignore
+    # them, so the chosen object is parked where a request can find it.
+    app.state.settings = settings
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.CORS_ORIGINS),

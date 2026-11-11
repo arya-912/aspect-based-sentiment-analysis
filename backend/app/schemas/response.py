@@ -45,7 +45,11 @@ class PredictResponse(BaseModel):
             "model saw. False means the prediction is outside the regime the "
             "model was trained on -- every training aspect was a literal span "
             "of its sentence -- so the result is a guess worth distrusting. "
-            "Null when it could not be determined."
+            "Null when it could not be determined. An aspect missing from the "
+            "review altogether is refused with a 422 instead of reaching "
+            "here, so False now narrows to the subtler cases: a stem match "
+            "(\"batteries\" against \"battery\"), an occurrence truncation "
+            "dropped, or REQUIRE_ASPECT_IN_TEXT turned off."
         ),
     )
     model_version: str = Field(..., description="Artifact version that served this.")

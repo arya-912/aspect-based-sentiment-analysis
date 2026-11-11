@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 import torch
+from fastapi.testclient import TestClient
 
+from app.main import create_app
 from app.services.predictor import MAX_ATTENTION_TOKENS
 from tests.conftest import LABELS, FakeEncoder, FakeModel
 
@@ -101,7 +103,7 @@ def test_predict_decodes_every_label(client, mocked_registry, winner, expected):
     mocked_registry._model = FakeModel(logits)
 
     body = client.post(
-        f"{PREFIX}/predict", json={"text": "Some review text.", "aspect": "thing"}
+        f"{PREFIX}/predict", json={"text": "Some review text.", "aspect": "review"}
     ).json()
     assert body["sentiment"] == expected
     assert body["confidence"] > 0.9
@@ -157,7 +159,7 @@ def test_predict_attention_is_capped(client, mocked_registry):
     mocked_registry._model = FakeModel(attention=attention)
 
     body = client.post(
-        f"{PREFIX}/predict", json={"text": "A much longer review sentence.", "aspect": "thing"}
+        f"{PREFIX}/predict", json={"text": "A much longer review sentence.", "aspect": "review"}
     ).json()
 
     assert len(body["attention"]) == MAX_ATTENTION_TOKENS
@@ -207,23 +209,91 @@ def test_predict_flags_an_aspect_that_is_in_the_review(client):
     assert body["aspect_in_text"] is True
 
 
-def test_predict_flags_an_aspect_that_is_not_in_the_review(client, mocked_registry):
-    """Still a prediction, but marked as one the model was never trained to make.
+def test_predict_refuses_an_aspect_that_is_not_in_the_review(client):
+    """The off-distribution request is rejected rather than answered.
 
-    Every training example took its aspect from a literal span of its
-    sentence, so this is off-distribution and a client must be able to say so.
+    The model is a softmax over three polarities with no way to abstain, so it
+    returns a confident verdict here -- on the real artifact, positive at
+    0.9803 for "keyboard" against a sentence about the screen. The answer is
+    the sentence's own sentiment wearing the aspect's name, and a caller
+    cannot tell that from the response, so the question is refused.
     """
-    mocked_registry._encoder = FakeEncoder(aspect_in_context=False)
-
     response = client.post(
         f"{PREFIX}/predict", json={"text": "Great screen.", "aspect": "keyboard"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 422
 
+    body = response.json()
+    assert set(body) == {"error", "status"}
+    assert "keyboard" in body["error"]
+    # No prediction leaked out alongside the refusal.
+    assert "sentiment" not in body
+
+
+def test_predict_refusal_does_not_need_the_model(degraded_client):
+    """A string check needs no artifact, so it answers 422 rather than 503.
+
+    Worth pinning: a caller debugging a typo should not be told to retry later.
+    """
+    response = degraded_client.post(
+        f"{PREFIX}/predict", json={"text": "Great screen.", "aspect": "keyboard"}
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("text", "aspect"),
+    [
+        ("The battery is great.", "batteries"),
+        ("The batteries are great.", "battery"),
+        ("The hard drive's speed is fine.", "hard drive"),
+    ],
+)
+def test_predict_accepts_an_inflected_aspect(client, text, aspect):
+    """A plural is not an absent aspect: the gate matches stems, not substrings."""
+    response = client.post(f"{PREFIX}/predict", json={"text": text, "aspect": aspect})
+    assert response.status_code == 200
+    assert response.json()["sentiment"] in VALID_SENTIMENTS
+
+
+def test_predict_answers_an_absent_aspect_when_enforcement_is_off(
+    mocked_registry, settings
+):
+    """The switch exists so the off-distribution behaviour stays reproducible.
+
+    It is what the figure quoted in the READMEs was measured with, and turning
+    it off must restore the old response exactly -- a prediction, flagged.
+    """
+    mocked_registry._encoder = FakeEncoder(aspect_in_context=False)
+    permissive = settings.model_copy(update={"REQUIRE_ASPECT_IN_TEXT": False})
+
+    with TestClient(create_app(permissive)) as client:
+        response = client.post(
+            f"{PREFIX}/predict", json={"text": "Great screen.", "aspect": "keyboard"}
+        )
+
+    assert response.status_code == 200
     body = response.json()
     assert body["aspect_in_text"] is False
     assert body["sentiment"] in VALID_SENTIMENTS
     assert body["confidence"] is not None
+
+
+def test_predict_flags_an_aspect_the_model_did_not_see_verbatim(client, mocked_registry):
+    """aspect_in_text still has a job once the gate is in front of it.
+
+    The gate reads the raw text; this flag reads the token ids the model
+    actually pooled over. They disagree when truncation drops the only
+    occurrence, or when the match was on a stem rather than the literal word
+    -- both are predictions worth a caveat, neither is worth a refusal.
+    """
+    mocked_registry._encoder = FakeEncoder(aspect_in_context=False)
+
+    response = client.post(
+        f"{PREFIX}/predict", json={"text": "Great screen.", "aspect": "screen"}
+    )
+    assert response.status_code == 200
+    assert response.json()["aspect_in_text"] is False
 
 
 def test_predict_requires_the_aspect_tokens_to_be_contiguous(client, mocked_registry):
@@ -246,7 +316,10 @@ def test_predict_requires_the_aspect_tokens_to_be_contiguous(client, mocked_regi
     mocked_registry._encoder = GappedAspectEncoder()
 
     body = client.post(
-        f"{PREFIX}/predict", json={"text": "Great screen.", "aspect": "screen fine"}
+        f"{PREFIX}/predict",
+        # "screen fine" is a word run of this text, so the string-level gate
+        # passes it through; the encoder is what puts the ids out of order.
+        json={"text": "Great screen fine.", "aspect": "screen fine"},
     ).json()
 
     assert body["aspect_in_text"] is False
@@ -315,8 +388,11 @@ def test_predict_rejects_aspect_over_the_limit(client):
 
 
 def test_predict_accepts_the_boundary_lengths(client):
+    # The aspect has to be a word of the text, or the presence gate refuses it
+    # before the length check is reached: 200 + 1 space + 1799 = 2000.
+    aspect = "y" * 200
     response = client.post(
-        f"{PREFIX}/predict", json={"text": "x" * 2000, "aspect": "y" * 200}
+        f"{PREFIX}/predict", json={"text": f"{aspect} {'x' * 1799}", "aspect": aspect}
     )
     assert response.status_code == 200
 

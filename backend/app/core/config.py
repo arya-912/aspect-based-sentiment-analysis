@@ -36,6 +36,13 @@ class Settings(BaseSettings):
         "http://localhost:3000",
     )
 
+    #: Refuse a /predict whose aspect does not occur in the review text.
+    #: The model has no "not mentioned" class and cannot abstain, so an absent
+    #: aspect gets a confident polarity that means nothing. Turn this off only
+    #: to reproduce that behaviour deliberately -- the off-distribution figures
+    #: quoted in the READMEs were measured with it off.
+    REQUIRE_ASPECT_IN_TEXT: bool = True
+
     #: When false, a failure to load the model at startup is fatal. The default
     #: lets the service boot and report "degraded" on /health instead, so an
     #: orchestrator can surface the problem rather than crash-looping.

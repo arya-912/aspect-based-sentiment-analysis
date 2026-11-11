@@ -8,9 +8,12 @@ from pydantic import BaseModel, Field, field_validator
 class PredictRequest(BaseModel):
     """One (sentence, aspect) pair to classify.
 
-    The aspect is expected to be a phrase from ``text``; the model will still
-    answer if it is not, but the prediction is only meaningful when the aspect
-    actually appears in the sentence.
+    The aspect must be a phrase from ``text``. The model will answer whether
+    or not it is -- it has no way to abstain -- so the route checks presence
+    itself and refuses with a 422, rather than returning a confident polarity
+    about something the review never mentions. The check lives in
+    ``services/aspect_match.py``; it matches whole words on stems, so a plural
+    is not a rejection.
     """
 
     text: str = Field(
