@@ -549,18 +549,53 @@ from BERT as `un ##res ##pon ##sive`, and four fragments would render as noise.
 `attention` is `null` rather than absent when the served model cannot report
 it, so a client always knows which case it is in.
 
-`aspect_in_text` says whether the aspect occurs verbatim in the review. It
-matters because the model answers just as confidently either way: send the
-sentence above with `"aspect":"keyboard"` and it returns **positive at 0.9803**
-about a keyboard the sentence never mentions. Every training example took its
-aspect from a literal span of its sentence, so an absent aspect is outside the
-regime the model learned, and a UI that shows the confidence without saying so
-is overclaiming. The check compares token ids rather than raw strings, so it
-agrees with what the model actually consumed — casing, punctuation and
-possessives are already normalised by the tokenizer (`OS` matches `os`,
-`hard drive` matches `hard drive's`), and an occurrence that truncation cut is
-correctly reported as absent. The frontend turns a `false` into a warning
-above the confidence figure.
+### An aspect the review never mentions is refused
+
+The model is a softmax over three polarities with **no way to abstain**. Nothing
+taught it one: every SemEval aspect term is a literal span of its sentence, so
+it never saw an absent aspect, and some label has to win regardless. Ask it
+about a keyboard in a sentence about the screen and aspect attention falls back
+onto whatever carries the sentence's overall sentiment — you get sentence-level
+sentiment wearing an aspect's name, at **positive 0.9803** on the sentence
+above. `confidence` is a softmax over the three options, not a probability that
+the aspect is there; the two are unrelated, which is why a threshold cannot
+catch this.
+
+So `/predict` checks presence itself and answers **422** rather than
+answering the question:
+
+```console
+$ curl -s -X POST localhost:8000/api/v1/predict \
+    -H 'Content-Type: application/json' \
+    -d '{"text":"The battery life is great but the screen is dim.","aspect":"keyboard"}'
+{"error": "aspect 'keyboard' does not occur in the review text; the model can only judge an aspect the review mentions", "status": 422}
+```
+
+The check is in [`backend/app/services/aspect_match.py`](backend/app/services/aspect_match.py)
+and it runs before the model is touched, so a typo gets a 422 rather than a 503
+when no artifact is loaded. It matches **whole words on stems**, not substrings:
+`batteries` is accepted against a review that says `battery`, because rejecting
+a real aspect over an `-s` would be worse than the failure being fixed, while
+`OS` is not found inside `most` and `hard drive` is not found in a review about
+a hard case and a test drive. Stemming is plurals and possessives only — no
+`-ing`/`-ed`, since over-stemming lets an aspect match a word that is not it.
+
+What it does **not** do is decide whether a word is an aspect or whether anyone
+evaluated it. `"aspect":"the"` is present, so it is answered. Catching that
+needs a fourth `not_mentioned` class, which means a hand-built
+negative-sampling set and a label space that no longer compares with
+SemEval-2014 Task 4 or with this project's own no-attention ablation — a
+retrain to fix an input-handling problem. Set `REQUIRE_ASPECT_IN_TEXT=false` to
+turn the gate off and reproduce the old behaviour, which is how the 0.9803
+above was measured.
+
+`aspect_in_text` still rides along on every response, now reporting the subtler
+case: whether the aspect reached the model **verbatim**. It compares token ids
+rather than raw strings, so it agrees with what the model actually consumed,
+and it answers `false` for a stem match (`batteries` for `battery`) or an
+occurrence that truncation cut — predictions worth a caveat rather than a
+refusal. The frontend turns a `false` into a warning above the confidence
+figure.
 
 It imports the training package rather than vendoring a copy of the
 architecture, so the serving path cannot drift from what was trained. If the
@@ -586,8 +621,9 @@ The Analysis screen keeps the results for one sentence rather than replacing
 them, so several aspects of the same review sit side by side — which is the
 only way a UI can show the thing that distinguishes this task. The attention is
 painted onto the review itself rather than listed beside it, and the aspect can
-be clicked out of the sentence, which makes an off-distribution aspect
-unreachable rather than merely flagged. The Performance screen renders the
+be clicked out of the sentence, which makes an absent aspect unreachable rather
+than merely flagged; typing one anyway is refused with the same rule the server
+applies, before the request. The Performance screen renders the
 `confusion_matrix` the API was already sending. Light/dark, keyboard
 navigation and phone widths are all handled. See
 [`frontend/README.md`](frontend/README.md).

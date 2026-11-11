@@ -41,7 +41,7 @@ src/
 ├── lib/
 │   ├── theme.ts              light / dark / system resolution
 │   ├── format.ts             percent and count formatting
-│   └── words.ts              word spans, attention-to-word mapping
+│   └── words.ts              word spans, attention-to-word mapping, aspect presence
 ├── services/api.ts           axios client; throws a typed error
 ├── components/
 │   ├── Card.tsx              the one raised surface
@@ -80,10 +80,11 @@ appears only when the model has actually returned different polarities for
 different aspects of the sentence on screen.
 
 **The aspect can be clicked out of the review.** Every training example took
-its aspect from a literal span of its sentence, so a typed aspect that is
-absent is outside the regime the model learned — and the model answers just as
-confidently anyway. Building the aspect by slicing the review's own characters
-makes that mistake unreachable rather than merely warning about it afterwards.
+its aspect from a literal span of its sentence, and the model is a softmax over
+three polarities with no way to abstain, so an absent aspect gets a confident
+answer that is really the sentence's own sentiment under a borrowed name.
+Building the aspect by slicing the review's own characters makes that mistake
+unreachable rather than warning about it afterwards.
 Click a word, shift-click a second to span several. The picker is one tab stop
 with arrow-key movement inside it, since a 30-word review would otherwise be 30
 tab stops. It renders the review's own punctuation and spacing, so what you
@@ -93,6 +94,21 @@ click is what you submit.
 over the review's own tokens, so a detached bar chart of token names throws
 away where in the sentence the weight fell. The exact figures stay a click away
 under "Exact weights", which is also what lets the overlay use color at all.
+
+**A typed aspect that is absent is refused before the request.** `looksPresent`
+in `lib/words.ts` is the same rule the server applies in
+`services/aspect_match.py` — whole words, matched on crude stems, so
+"batteries" passes against a review that says "battery" — which is why it can
+decide rather than merely hint. The API answers 422 for anything it rejects, so
+a round trip would only add latency to a message already on screen. The two
+stemmers were checked against each other over 35 words and 14 phrase pairs with
+no disagreement; keeping them in step is the reason the frontend copy is
+deliberately crude and carries no `-ing`/`-ed` rules of its own.
+
+It is not the same question as the response's `aspect_in_text`, which reports
+whether the aspect reached the model *verbatim*: a stem match and a truncated
+review both pass this check and come back `false` there, which is a caveat
+rather than a refusal.
 
 One honest limit, stated in the UI: **the API reports weights per word, not per
 position.** When a word occurs twice ("is" twice is entirely normal) two
@@ -186,9 +202,13 @@ treatment visible on both surfaces.
 - Rendered in a headless browser at 1280px and 390px, light and dark: no
   horizontal overflow at phone width on either screen.
 - `aspect_in_text === false` renders a warning *above* the confidence figure,
-  since the model is just as confident about an absent aspect as a present one
-  — "keyboard" against a sentence about battery and screen returns positive at
-  0.9803. Only an explicit `false` warns: `null` means the backend could not
-  tell, and a caveat built from "unknown" would cry wolf.
+  since the model is just as confident about an aspect it did not see as one it
+  did. Only an explicit `false` warns: `null` means the backend could not tell,
+  and a caveat built from "unknown" would cry wolf.
+- An aspect absent from the review is blocked in the form and answered 422 by
+  the API. Against the real artifact, "keyboard" on "The battery life is great
+  but the screen is dim." returns positive at 0.9803 once
+  `REQUIRE_ASPECT_IN_TEXT` is off — which is what the refusal exists to stop a
+  client presenting as a verdict.
 - `scores` and `attention` are both nullable, so `ResultCard` renders those
   sections only when they arrive.
