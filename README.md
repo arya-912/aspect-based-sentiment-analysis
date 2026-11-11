@@ -42,10 +42,12 @@ absa-project/
 └── frontend/            React + TypeScript UI (Vite)
     └── src/
         ├── types/          shapes mirroring the backend schemas
+        ├── lib/            theme, formatting, word spans
         ├── services/       api.ts — typed axios client
-        ├── components/     SentimentBadge, ResultCard, AttentionBars, HealthBanner, ReviewForm
+        ├── components/     SentimentBadge, ResultCard, HighlightedSentence,
+        │                   AspectPicker, ConfusionMatrix, PerClassTable, …
         ├── pages/          AnalysisPage, PerformancePage
-        └── App.tsx         tab toggle
+        └── App.tsx         hash-routed sections
 ```
 
 ## Data
@@ -578,8 +580,16 @@ cd frontend && npm install && npm run dev        # http://localhost:5173
 
 `VITE_API_URL` (see `frontend/.env.example`) overrides the backend URL; it
 defaults to `http://localhost:8000`, and the backend's CORS policy already
-allows the Vite dev origin. Functional rather than polished — plain Tailwind,
-no animations, no responsive work. See
+allows the Vite dev origin.
+
+The Analysis screen keeps the results for one sentence rather than replacing
+them, so several aspects of the same review sit side by side — which is the
+only way a UI can show the thing that distinguishes this task. The attention is
+painted onto the review itself rather than listed beside it, and the aspect can
+be clicked out of the sentence, which makes an off-distribution aspect
+unreachable rather than merely flagged. The Performance screen renders the
+`confusion_matrix` the API was already sending. Light/dark, keyboard
+navigation and phone widths are all handled. See
 [`frontend/README.md`](frontend/README.md).
 
 ## Running the whole stack
