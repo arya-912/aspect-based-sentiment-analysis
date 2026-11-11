@@ -79,16 +79,68 @@ export function attentionByWord(attention: TokenAttention[]): Map<string, number
 }
 
 /**
- * Whether `aspect` occurs in `text` as a contiguous run of whole words.
+ * A crude English stem: possessives and plurals only.
  *
- * Only ever used to decide whether to *offer* the "not in the review" hint
- * before a request is sent. The backend's own `aspect_in_text` is the
- * authority after one: it compares token ids, so it sees through casing,
- * punctuation and possessives, and it knows whether truncation cut the
- * occurrence off. This is a cheap pre-check, never a contradiction of that.
+ * Deliberately not a real stemmer. This has to agree with the backend's
+ * `stem()` in `services/aspect_match.py`, which is what decides whether a
+ * request is refused -- a cleverer rule here would make the UI contradict the
+ * server. The length guards are why `OS` keeps its `s`, and the absence of
+ * `-ing`/`-ed` rules is why `priced` never matches `price`: over-stemming
+ * lets an aspect match a word that is not it, which is the mistake the whole
+ * check exists to prevent.
+ */
+export function stemWord(word: string): string {
+  let stem = word.toLowerCase()
+  for (const possessive of ["'s", '’s']) {
+    if (stem.endsWith(possessive)) {
+      stem = stem.slice(0, -possessive.length)
+      break
+    }
+  }
+
+  if (stem.length > 4 && stem.endsWith('ies')) return `${stem.slice(0, -3)}y`
+  if (
+    stem.length > 4 &&
+    ['sses', 'shes', 'ches', 'xes', 'zes'].some((suffix) => stem.endsWith(suffix))
+  ) {
+    return stem.slice(0, -2)
+  }
+  if (
+    stem.length > 3 &&
+    stem.endsWith('s') &&
+    !['ss', 'us', 'is'].some((suffix) => stem.endsWith(suffix))
+  ) {
+    return stem.slice(0, -1)
+  }
+  return stem
+}
+
+/** Every word of `text`, in order, stemmed. */
+function wordStems(text: string): string[] {
+  return splitWords(text).map((word) => stemWord(word.text))
+}
+
+/**
+ * Whether `aspect` occurs in `text` as a contiguous run of whole words,
+ * compared on stems.
+ *
+ * Contiguous because an aspect term is a phrase: "hard drive" is not in a
+ * review about a hard case and a test drive. Whole words because a substring
+ * test finds "OS" inside "most". On stems so that "batteries" is accepted
+ * against a review that says "battery".
+ *
+ * This is the same rule the backend applies, so it can be trusted to decide
+ * before a request rather than only to hint. It is still not the same
+ * question as the response's `aspect_in_text`, which reports whether the
+ * aspect reached the model *verbatim* -- a stem match and a truncated review
+ * both answer true here and false there.
  */
 export function looksPresent(text: string, aspect: string): boolean {
-  const needle = aspect.trim().toLowerCase()
-  if (needle === '') return true
-  return text.toLowerCase().includes(needle)
+  const needle = wordStems(aspect)
+  if (needle.length === 0) return true
+
+  const haystack = wordStems(text)
+  return haystack.some((_, start) =>
+    needle.every((word, offset) => haystack[start + offset] === word),
+  )
 }

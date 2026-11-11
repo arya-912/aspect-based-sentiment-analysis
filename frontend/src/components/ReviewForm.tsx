@@ -72,10 +72,10 @@ export default function ReviewForm({ onResult, onLoadingChange }: ReviewFormProp
   const trimmedAspect = aspect.trim()
   const isEmpty = trimmedText === '' || trimmedAspect === ''
 
-  // A hint, not a verdict. The backend decides this properly on token ids --
-  // it sees through casing and possessives and knows about truncation -- so
-  // this only ever says "you may have meant something else", before a request.
-  const maybeAbsent = !isEmpty && !looksPresent(trimmedText, trimmedAspect)
+  // The same rule the server applies, so this can say so before the request
+  // instead of hinting at it. `looksPresent` matches whole words on stems, as
+  // `aspect_match.py` does; anything it rejects the API answers 422 for.
+  const isAbsent = !isEmpty && !looksPresent(trimmedText, trimmedAspect)
 
   function setBusy(busy: boolean) {
     setLoading(busy)
@@ -94,6 +94,14 @@ export default function ReviewForm({ onResult, onLoadingChange }: ReviewFormProp
 
     if (isEmpty) {
       setValidationError('Both a review text and an aspect term are required.')
+      return
+    }
+    // Caught here as well as server-side: the API refuses this with a 422, and
+    // a round trip to be told what was already on screen is just latency.
+    if (isAbsent) {
+      setValidationError(
+        `“${trimmedAspect}” is not a phrase from this review, so there is nothing to judge.`,
+      )
       return
     }
     setValidationError(null)
@@ -184,10 +192,10 @@ export default function ReviewForm({ onResult, onLoadingChange }: ReviewFormProp
           maxLength={MAX_ASPECT}
           placeholder="screen"
           className={fieldClass}
-          aria-describedby={maybeAbsent ? 'aspect-absent-hint' : undefined}
+          aria-describedby={isAbsent ? 'aspect-absent-hint' : undefined}
         />
 
-        {maybeAbsent && (
+        {isAbsent && (
           <p
             id="aspect-absent-hint"
             className="mt-1.5 flex items-start gap-1.5 text-xs text-ink-2"
@@ -196,8 +204,9 @@ export default function ReviewForm({ onResult, onLoadingChange }: ReviewFormProp
               <WarningIcon className="h-3.5 w-3.5" />
             </span>
             <span>
-              “{trimmedAspect}” does not look like a phrase from this review. The model
-              will still answer, confidently — which is the point worth seeing.
+              “{trimmedAspect}” is not a phrase from this review. The model has no way
+              to answer “not mentioned” — it would return a confident polarity anyway —
+              so this is refused rather than guessed. Pick a word below.
             </span>
           </p>
         )}
