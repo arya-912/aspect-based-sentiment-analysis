@@ -1,10 +1,33 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ABSA — Aspect-Based Sentiment Analysis</title>
+    <meta
+      name="description"
+      content="Predict the sentiment a laptop review expresses about one specific aspect, and see which words the model attended to."
+    />
+    <!--
+      Resolve the theme before the first paint, so a dark-mode user never sees a
+      white flash. This duplicates the resolution in src/lib/theme.ts on purpose:
+      anything imported as a module runs after the first paint, which is too late.
+      Wrapped in try/catch because localStorage throws outright in some privacy
+      modes, and an unthemed page is a far better outcome than a blank one.
+    -->
+    <script>
+      try {
+        var stored = localStorage.getItem('absa-theme')
+        var prefersDark =
+          typeof matchMedia === 'function' &&
+          matchMedia('(prefers-color-scheme: dark)').matches
+        document.documentElement.dataset.theme =
+          stored === 'dark' || (stored !== 'light' && prefersDark) ? 'dark' : 'light'
+      } catch {
+        document.documentElement.dataset.theme = 'light'
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

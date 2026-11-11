@@ -1,33 +1,33 @@
+import { asPercent } from '../lib/format'
 import { SENTIMENTS, type PredictResponse, type Sentiment } from '../types'
 import AttentionBars from './AttentionBars'
 import BarRow from './BarRow'
+import Card from './Card'
+import HighlightedSentence from './HighlightedSentence'
 import SentimentBadge from './SentimentBadge'
+import { ChevronIcon, WarningIcon } from './icons'
 
 interface ResultCardProps {
   result: PredictResponse
+  /** The review this prediction was made about, for the attention overlay. */
+  text: string
 }
 
 /**
- * Bar colour per polarity.
+ * Bar color per polarity: the two diverging poles and the gray midpoint.
  *
  * Written out rather than interpolated, for the same reason as
  * `SentimentBadge`: Tailwind only emits class names it finds literally in the
  * source.
  */
 const SCORE_BARS: Record<Sentiment, string> = {
-  negative: 'bg-red-400',
-  neutral: 'bg-yellow-400',
-  positive: 'bg-green-400',
+  negative: 'bg-neg',
+  neutral: 'bg-neu',
+  positive: 'bg-pos',
 }
 
-/** Format a 0-1 probability as a percentage, or a dash when absent. */
-function formatConfidence(confidence: number | null): string {
-  if (confidence === null || Number.isNaN(confidence)) return '—'
-  return `${(confidence * 100).toFixed(1)}%`
-}
-
-/** One prediction, laid out as a bordered card. */
-export default function ResultCard({ result }: ResultCardProps) {
+/** One prediction about one aspect. */
+export default function ResultCard({ result, text }: ResultCardProps) {
   const { aspect, sentiment, confidence, scores, attention, model_version } = result
 
   // Only an explicit `false` is a warning. `null` means the backend could not
@@ -41,11 +41,13 @@ export default function ResultCard({ result }: ResultCardProps) {
     : []
 
   return (
-    <div className="rounded-lg border border-gray-300 bg-white p-5">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-xs uppercase tracking-wide text-gray-500">Aspect</p>
-          <p className="text-lg font-semibold text-gray-900">{aspect}</p>
+    <Card className="overflow-hidden">
+      <div className="flex items-start justify-between gap-4 p-4">
+        <div className="min-w-0">
+          <p className="text-xs uppercase tracking-wide text-muted">Aspect</p>
+          <p className="truncate text-lg font-semibold text-ink" title={aspect}>
+            {aspect}
+          </p>
         </div>
         <SentimentBadge sentiment={sentiment} />
       </div>
@@ -56,43 +58,50 @@ export default function ResultCard({ result }: ResultCardProps) {
         has to be read before the number, not after it.
       */}
       {aspectMissing && (
-        <div
-          role="note"
-          className="mt-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
-        >
-          <p className="font-medium">“{aspect}” does not appear in this review</p>
-          <p className="mt-1">
-            Every example the model trained on used an aspect term taken
-            verbatim from its sentence, so this prediction is outside what it
-            learned. The confidence below is not trustworthy here.
-          </p>
+        <div role="note" className="mx-4 mb-4 flex gap-2.5 rounded-lg border border-warning/40 bg-warning/10 p-3">
+          <span className="mt-0.5 text-warning">
+            <WarningIcon />
+          </span>
+          <div className="text-sm text-ink">
+            <p className="font-medium">“{aspect}” does not appear in this review</p>
+            <p className="mt-1 text-ink-2">
+              Every example the model trained on used an aspect term taken verbatim
+              from its sentence, so this prediction is outside what it learned. The
+              confidence below is not trustworthy here.
+            </p>
+          </div>
         </div>
       )}
 
-      <dl className="mt-4 grid grid-cols-2 gap-4 border-t border-gray-200 pt-4 text-sm">
+      <dl className="grid grid-cols-2 gap-4 border-t border-line px-4 py-3 text-sm">
         <div>
-          <dt className="text-gray-500">Confidence</dt>
-          <dd className="font-medium text-gray-900">{formatConfidence(confidence)}</dd>
+          <dt className="text-xs uppercase tracking-wide text-muted">Confidence</dt>
+          <dd className="tabular mt-0.5 text-xl font-semibold text-ink">
+            {asPercent(confidence)}
+          </dd>
         </div>
         <div>
-          <dt className="text-gray-500">Model</dt>
-          <dd className="font-mono text-gray-900">{model_version}</dd>
+          <dt className="text-xs uppercase tracking-wide text-muted">Model</dt>
+          <dd className="mt-0.5 truncate font-mono text-sm text-ink-2" title={model_version}>
+            {model_version}
+          </dd>
         </div>
       </dl>
 
       {scores && distribution.length > 0 && (
-        <div className="mt-4 border-t border-gray-200 pt-4">
-          <p className="text-xs uppercase tracking-wide text-gray-500">
+        <div className="border-t border-line px-4 py-3">
+          <p className="mb-2 text-xs uppercase tracking-wide text-muted">
             Label distribution
           </p>
-          <div className="mt-2 space-y-1.5">
+          <div className="space-y-1.5">
             {distribution.map((label) => (
               <BarRow
                 key={label}
                 label={label}
-                value={formatConfidence(scores[label])}
+                value={asPercent(scores[label])}
                 fraction={scores[label]}
                 barClassName={SCORE_BARS[label]}
+                labelClassName="w-20"
               />
             ))}
           </div>
@@ -100,10 +109,36 @@ export default function ResultCard({ result }: ResultCardProps) {
       )}
 
       {attention && attention.length > 0 && (
-        <div className="mt-4 border-t border-gray-200 pt-4">
-          <AttentionBars attention={attention} />
+        <div className="border-t border-line px-4 py-3">
+          <p className="mb-2 text-xs uppercase tracking-wide text-muted">
+            What the model looked at
+          </p>
+          <HighlightedSentence text={text} attention={attention} />
+
+          {/*
+            Native <details> rather than a state-driven panel: it is keyboard
+            accessible and open-by-URL-fragment searchable for free, and the
+            exact figures are a detail of the highlight above rather than a
+            competing view of it.
+          */}
+          <details className="group mt-3">
+            <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-ink-2 hover:text-ink">
+              <span className="transition-transform group-open:rotate-0 -rotate-90">
+                <ChevronIcon className="h-3.5 w-3.5" />
+              </span>
+              Exact weights
+            </summary>
+            <div className="mt-2">
+              <AttentionBars attention={attention} />
+              <p className="mt-2 text-xs text-muted">
+                Share of this aspect&rsquo;s attention over the review. Weights are
+                reported per word, not per position, so a word occurring twice is
+                highlighted above at the higher of its two figures.
+              </p>
+            </div>
+          </details>
         </div>
       )}
-    </div>
+    </Card>
   )
 }

@@ -61,6 +61,15 @@ export interface ModelEvaluation {
   accuracy: number
   macro_f1: number
   per_class: Record<string, PerClassMetrics>
+  /**
+   * Counts of gold label vs predicted label: `confusion_matrix[gold][pred]`,
+   * indexed in class-id order, i.e. the order of {@link SENTIMENTS}.
+   *
+   * The backend has always sent this -- it is in its `EVALUATION_KEYS` -- but
+   * nothing read it until the Performance page grew a matrix view. Optional
+   * because an artifact can ship a metrics report without one.
+   */
+  confusion_matrix?: number[][]
   /** Extras the backend also sends; optional so a leaner payload still fits. */
   weighted_f1?: number
   n?: number

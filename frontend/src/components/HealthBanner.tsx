@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { BASE_URL, getHealth, isApiError } from '../services/api'
+import { OfflineIcon, WarningIcon } from './icons'
 
 /**
  * `checking` is the first request, before anything is known; nothing renders
@@ -24,6 +25,9 @@ const RETRY_MS = 5000
  * API being unreachable, and the API being up with no model loaded. The
  * backend deliberately answers 200 `{"status": "degraded"}` for the second
  * rather than 503, which is what makes them distinguishable at all.
+ *
+ * Both states ship an icon beside the text. The two cases use reserved status
+ * colors, and a status color never carries meaning on its own.
  */
 export default function HealthBanner() {
   const [status, setStatus] = useState<Status>('checking')
@@ -73,32 +77,44 @@ export default function HealthBanner() {
   return (
     <div
       role="alert"
-      className={`mb-6 rounded-md border p-4 text-sm ${
+      className={`mb-6 flex gap-3 rounded-xl border p-4 text-sm ${
         unreachable
-          ? 'border-red-300 bg-red-50 text-red-800'
-          : 'border-amber-300 bg-amber-50 text-amber-900'
+          ? 'border-critical/40 bg-critical/10'
+          : 'border-warning/40 bg-warning/10'
       }`}
     >
-      <p className="font-medium">
-        {unreachable ? 'Cannot reach the API' : 'No model is loaded'}
-      </p>
-      <p className="mt-1">
-        {unreachable
-          ? (detail ?? `No response from ${BASE_URL}.`)
-          : 'The server is running, but it started without an artifact, so every prediction will fail.'}
-      </p>
-      <p className="mt-2 text-xs">
-        {unreachable ? (
-          <>
-            Start it with <code className="font-mono">cd backend &amp;&amp; uvicorn app.main:app --port 8000</code>
-          </>
-        ) : (
-          <>
-            Train one with <code className="font-mono">cd training &amp;&amp; python train.py train</code>
-          </>
-        )}
-        . Rechecking every {RETRY_MS / 1000}s.
-      </p>
+      <span className={`mt-0.5 ${unreachable ? 'text-critical' : 'text-warning'}`}>
+        {unreachable ? <OfflineIcon /> : <WarningIcon />}
+      </span>
+
+      <div className="min-w-0">
+        <p className="font-medium text-ink">
+          {unreachable ? 'Cannot reach the API' : 'No model is loaded'}
+        </p>
+        <p className="mt-1 text-ink-2">
+          {unreachable
+            ? (detail ?? `No response from ${BASE_URL}.`)
+            : 'The server is running, but it started without an artifact, so every prediction will fail.'}
+        </p>
+        <p className="mt-2 text-xs text-muted">
+          {unreachable ? (
+            <>
+              Start it with{' '}
+              <code className="rounded bg-plane px-1 py-0.5 font-mono text-ink-2">
+                cd backend &amp;&amp; uvicorn app.main:app --port 8000
+              </code>
+            </>
+          ) : (
+            <>
+              Train one with{' '}
+              <code className="rounded bg-plane px-1 py-0.5 font-mono text-ink-2">
+                cd training &amp;&amp; python train.py train
+              </code>
+            </>
+          )}
+          . Rechecking every {RETRY_MS / 1000}s.
+        </p>
+      </div>
     </div>
   )
 }

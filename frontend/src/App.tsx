@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import HealthBanner from './components/HealthBanner'
+import ThemeToggle from './components/ThemeToggle'
 import AnalysisPage from './pages/AnalysisPage'
 import PerformancePage from './pages/PerformancePage'
 
@@ -11,42 +12,75 @@ const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
   { id: 'performance', label: 'Performance' },
 ]
 
+function tabFromHash(): Tab {
+  return window.location.hash === '#performance' ? 'performance' : 'analysis'
+}
+
+/**
+ * Which section is open lives in the URL fragment rather than in component
+ * state, so the browser's back button works, a reload stays where it was, and
+ * the performance view can be linked to directly. The sections are real
+ * navigation, so they are anchors -- not buttons dressed as tabs.
+ */
+function useHashTab(): Tab {
+  const [tab, setTab] = useState<Tab>(tabFromHash)
+
+  useEffect(() => {
+    const onHashChange = () => setTab(tabFromHash())
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
+  return tab
+}
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<Tab>('analysis')
+  const activeTab = useHashTab()
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="border-b border-gray-200 bg-white">
-        <div className="mx-auto max-w-3xl px-4 py-4">
-          <h1 className="text-xl font-bold text-gray-900">
-            Aspect-Based Sentiment Analysis
-          </h1>
-          <p className="mt-1 text-sm text-gray-600">Laptop reviews, aspect by aspect.</p>
+    <div className="min-h-screen bg-plane">
+      {/*
+        Sticky, because the Analysis page is a scrolling list of results and
+        losing the section switcher partway down it is worse than the 60px the
+        header costs.
+      */}
+      <header className="sticky top-0 z-10 border-b border-line bg-plane/85 backdrop-blur">
+        <div className="mx-auto max-w-5xl px-4">
+          <div className="flex items-center justify-between gap-4 py-3">
+            <div className="min-w-0">
+              <h1 className="truncate text-base font-semibold text-ink">
+                Aspect-Based Sentiment Analysis
+              </h1>
+              <p className="truncate text-xs text-muted">
+                Laptop reviews, one aspect at a time
+              </p>
+            </div>
+            <ThemeToggle />
+          </div>
 
-          <nav className="mt-4 flex gap-2" aria-label="Sections">
+          <nav className="-mb-px flex gap-1" aria-label="Sections">
             {TABS.map(({ id, label }) => {
               const isActive = activeTab === id
               return (
-                <button
+                <a
                   key={id}
-                  type="button"
-                  onClick={() => setActiveTab(id)}
+                  href={`#${id}`}
                   aria-current={isActive ? 'page' : undefined}
-                  className={`rounded-md px-4 py-2 text-sm font-medium ${
+                  className={`border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
                     isActive
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      ? 'border-accent text-ink'
+                      : 'border-transparent text-muted hover:border-line hover:text-ink-2'
                   }`}
                 >
                   {label}
-                </button>
+                </a>
               )
             })}
           </nav>
         </div>
       </header>
 
-      <main className="mx-auto max-w-3xl px-4 py-6">
+      <main className="mx-auto max-w-5xl px-4 py-6">
         {/*
           Outside the tab switch, and above it: it reports whether the backend
           can serve anything at all, which is true of both tabs and is the
@@ -64,6 +98,14 @@ export default function App() {
           <PerformancePage key="performance" />
         )}
       </main>
+
+      <footer className="mx-auto max-w-5xl px-4 pb-8 pt-2">
+        <p className="text-xs text-muted">
+          BERT with aspect attention, fine-tuned on the SemEval-2014 Task 4 laptop
+          corpus. Predictions are about the aspect term you give, not the sentence as
+          a whole.
+        </p>
+      </footer>
     </div>
   )
 }

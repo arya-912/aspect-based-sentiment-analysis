@@ -1,1 +1,179 @@
 @import 'tailwindcss';
+
+/*
+  Dark mode is driven by `<html data-theme="light|dark">`, which the inline
+  script in index.html stamps before the first paint. Because the attribute is
+  always present, the variant needs only this selector -- no
+  `prefers-color-scheme` duplicate to keep in step, and no flash of the wrong
+  theme on load. `src/lib/theme.ts` owns the attribute from there on.
+*/
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/*
+  Palette from the project's data-visualization reference, chosen by the job
+  each color does rather than by taste. Sentiment is a *diverging* scale
+  (negative <- neutral -> positive), so it gets two poles and a neutral gray
+  midpoint -- not three categorical hues, and deliberately not yellow in the
+  middle: in SemEval, `neutral` means the aspect was mentioned without being
+  evaluated, which is an absence of polarity, not a caution state.
+
+  The red/green poles sit at CVD deltaE 7.2 in light mode (8.6 in dark), inside the
+  6-8 floor band that is legal only with secondary encoding. Every sentiment in
+  this UI is spelled out in text beside its color, which is that encoding -- so
+  do not introduce a color-only sentiment cue anywhere.
+*/
+@theme {
+  /* Surfaces and ink */
+  --color-plane: #f9f9f7;
+  --color-surface: #fcfcfb;
+  --color-ink: #0b0b0b;
+  --color-ink-2: #52514e;
+  --color-muted: #898781;
+  --color-line: rgba(11, 11, 11, 0.1);
+  --color-grid: #e1e0d9;
+
+  /* Interactive chrome (UI, not data: categorical slot 1) */
+  --color-accent: #2a78d6;
+  --color-accent-hover: #256abf;
+  --color-on-accent: #ffffff;
+
+  /* Sentiment: diverging poles + gray midpoint */
+  --color-neg: #e34948;
+  --color-neu: #898781;
+  --color-pos: #008300;
+
+  /* Attention: one hue, magnitude carried by bar length / fill alpha */
+  --color-attn: #6250d6;
+
+  /* Status: reserved, always shipped with an icon and a label */
+  --color-good: #0ca30c;
+  --color-critical: #d03b3b;
+  --color-warning: #fab219;
+}
+
+/*
+  `:root[data-theme='dark']` rather than `[data-theme='dark']` so this beats
+  the `:root` block Tailwind emits for @theme on specificity, not source order.
+  The dark steps are selected for the dark surface, not an automatic flip.
+*/
+:root[data-theme='dark'] {
+  --color-plane: #0d0d0d;
+  --color-surface: #1a1a19;
+  --color-ink: #f0efec;
+  --color-ink-2: #c3c2b7;
+  --color-muted: #898781;
+  --color-line: rgba(255, 255, 255, 0.1);
+  --color-grid: #2c2c2a;
+
+  --color-accent: #3987e5;
+  --color-accent-hover: #2a78d6;
+  --color-on-accent: #ffffff;
+
+  --color-seq-1: #0d366b;
+  --color-seq-2: #184f95;
+  --color-seq-3: #256abf;
+  --color-seq-4: #3987e5;
+  --color-seq-5: #6da7ec;
+  --color-seq-6: #9ec5f4;
+  --color-seq-1-ink: #ffffff;
+  --color-seq-2-ink: #ffffff;
+  --color-seq-3-ink: #ffffff;
+  --color-seq-4-ink: #ffffff;
+  --color-seq-5-ink: #0b0b0b;
+  --color-seq-6-ink: #0b0b0b;
+
+  --color-neg: #e66767;
+  --color-neu: #898781;
+  --color-pos: #008300;
+
+  --color-attn: #9085e9;
+}
+
+/*
+  The sequential ramp lives outside `@theme` on purpose: it is only ever read
+  through an inline `var()` in the confusion matrix, never through a Tailwind
+  utility, and Tailwind can drop `@theme` variables that no utility references.
+  A plain custom property is never pruned.
+*/
+:root {
+  /*
+  Sequential ramp for magnitude (the confusion matrix), from the documented
+  blue scale. Six steps plus the label ink that stays readable on each.
+
+  In light mode the low end is the lightest step, receding toward the light
+  surface. The dark ramp is *reversed*, not brightened: "near zero" has to
+  recede toward the dark surface too, so low becomes the darkest step. An
+  automatic flip of the light ramp would leave zero glowing.
+  */
+  --color-seq-1: #cde2fb;
+  --color-seq-2: #9ec5f4;
+  --color-seq-3: #6da7ec;
+  --color-seq-4: #3987e5;
+  --color-seq-5: #256abf;
+  --color-seq-6: #0d366b;
+  --color-seq-1-ink: #0b0b0b;
+  --color-seq-2-ink: #0b0b0b;
+  --color-seq-3-ink: #0b0b0b;
+  --color-seq-4-ink: #ffffff;
+  --color-seq-5-ink: #ffffff;
+  --color-seq-6-ink: #ffffff;
+}
+
+@layer base {
+  /*
+    Tells the browser to theme its own chrome -- scrollbars, form controls, the
+    caret -- to match. Without it a dark page keeps light scrollbars.
+  */
+  :root {
+    color-scheme: light;
+  }
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+  }
+
+  html {
+    /* Anchor links and tab switches should not jump the viewport. */
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--color-plane);
+    color: var(--color-ink);
+    font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /*
+    One focus treatment for everything, visible on both surfaces. `:focus-visible`
+    rather than `:focus` so a mouse click does not leave a ring behind.
+  */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* Columns of figures align; prose keeps proportional figures. */
+  table,
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /*
+    Honour the OS setting. Everything in this UI is a short transition on a
+    bar width or a background, so removing them costs nothing and prevents
+    motion sickness for users who asked not to see it.
+  */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
