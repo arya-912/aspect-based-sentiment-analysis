@@ -29,3 +29,6 @@ frontend/dist/
 # Tooling caches
 .pytest_cache/
 .ipynb_checkpoints/
+
+# Internal context sheet, local only
+PROJECT_CONTEXT.md
