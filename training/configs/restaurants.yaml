@@ -1,0 +1,56 @@
+# SemEval-2014 Task 4, *restaurant* domain -- the other half of the benchmark.
+#
+# A separate run and a separate artifact on purpose. The benchmark is scored
+# per domain, so a model trained on laptops and restaurants pooled together has
+# a macro F1 that compares to nothing published, and to neither of this
+# project's own recorded runs. Everything below the paths is identical to
+# default.yaml, which is the point: the comparison is domain, not recipe.
+#
+# Get the CSVs first (the official release is XML):
+#   python convert_semeval_xml.py <path>/Restaurants_Train_v2.xml <path>/Restaurants_Test_Gold.xml
+#
+#   train: 3041 sentences -> 3693 rows, 3602 usable (91 conflict dropped)
+#   test:   800 sentences -> 1134 rows, 1120 usable (14 conflict dropped)
+#
+# vs laptops' 2313 train and 638 test, so expect ~1.5x the data and a
+# positive-heavy distribution (2164 pos / 805 neg / 633 neu in train) -- the
+# `neutral` class is scarcer here than it is in laptops, not less of a problem.
+seed: 42
+
+model:
+  name: bert-base-uncased
+  max_length: 128
+  dropout: 0.1
+  num_labels: 3
+
+training:
+  epochs: 4
+  batch_size: 16
+  lr: 3e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  max_grad_norm: 1.0
+  val_fraction: 0.1
+  early_stopping_patience: 2
+  keep_checkpoint: false
+
+paths:
+  raw_train: training/data/raw/Restaurants_Train_v2.csv
+  official_test: training/data/raw/Restaurants_Test_Gold.csv
+  # Its own split directory: the laptop run writes train.csv/val.csv into
+  # processed/splits, and sharing it would have each domain silently overwrite
+  # the other's splits between runs.
+  processed_dir: training/data/processed/splits-restaurants
+  artifacts_dir: training/artifacts
+
+artifact:
+  version: absa-rest-v1
+
+data:
+  labels: [negative, neutral, positive]
+  class_weighting: true
+
+optim:
+  head_lr: 1.0e-4
+  eval_batch_size: 64
+  num_workers: 0
