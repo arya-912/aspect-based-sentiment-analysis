@@ -1,0 +1,67 @@
+# MAMS-ATSA (Jiang et al., EMNLP-IJCNLP 2019) -- the multi-aspect, multi-
+# sentiment benchmark. Every sentence carries at least two aspects with
+# *different* polarities; sentences with one aspect, or with all aspects
+# agreeing, were deleted when the corpus was built.
+#
+# Why run it: the laptop and restaurant sets have mixed polarity in only ~12%
+# of sentences, so a model that ignored the aspect and read sentence-level
+# sentiment would already score well there -- which is most of what the
+# attention ablation's +0.043 macro F1 is competing against. Here that
+# shortcut is worthless by construction, so the ablation becomes an effect
+# size rather than a narrow gap. It also carries 5042 neutral training rows
+# against the laptops' 460, which is the one real shot at `neutral` F1 0.6169.
+#
+# Get the CSVs (same schema as SemEval, so the same converter):
+#   python convert_semeval_xml.py <path>/train.xml --out data/raw/MAMS_Train.csv
+#   python convert_semeval_xml.py <path>/test.xml  --out data/raw/MAMS_Test.csv
+#
+#   train: 4297 sentences -> 11186 rows (2764 neg / 5042 neu / 3380 pos)
+#   test:   500 sentences ->  1336 rows ( 329 neg /  607 neu /  400 pos)
+#
+# Cost: 4.8x the laptop corpus. At the observed ~3.85 s/step on this CPU that
+# is roughly 45 min per epoch, so budget 3-4 hours for the four below.
+#
+# Note on the val set: MAMS ships its own val.xml (converted to
+# MAMS_Val.csv), but this pipeline carves val out of raw_train by
+# `val_fraction`, so that file is unused here. The split is grouped by
+# sentence, so no sentence leaks across it either way; MAMS_Val.csv is kept on
+# disk for a later run that wants model selection on the official split.
+seed: 42
+
+model:
+  name: bert-base-uncased
+  max_length: 128
+  dropout: 0.1
+  num_labels: 3
+
+training:
+  epochs: 4
+  batch_size: 16
+  lr: 3e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  max_grad_norm: 1.0
+  val_fraction: 0.1
+  early_stopping_patience: 2
+  keep_checkpoint: false
+
+paths:
+  raw_train: training/data/raw/MAMS_Train.csv
+  official_test: training/data/raw/MAMS_Test.csv
+  processed_dir: training/data/processed/splits-mams
+  artifacts_dir: training/artifacts
+
+artifact:
+  version: absa-mams-v1
+
+data:
+  labels: [negative, neutral, positive]
+  # Left on for consistency with the other runs, but it matters far less here:
+  # MAMS is near-balanced (25/45/30) where laptops are not, so the weights are
+  # close to 1 and this is almost a no-op rather than a correction.
+  class_weighting: true
+
+optim:
+  head_lr: 1.0e-4
+  eval_batch_size: 64
+  num_workers: 0
