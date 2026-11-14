@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react'
 
 import HealthBanner from './components/HealthBanner'
 import ThemeToggle from './components/ThemeToggle'
+import { domainFor } from './lib/domains'
 import AnalysisPage from './pages/AnalysisPage'
 import PerformancePage from './pages/PerformancePage'
+import { getModelMeta } from './services/api'
 
 type Tab = 'analysis' | 'performance'
 
@@ -34,8 +36,32 @@ function useHashTab(): Tab {
   return tab
 }
 
+/**
+ * The corpus the served artifact was trained on, or null while unknown.
+ *
+ * Asked once, because the answer changes only when the backend is restarted
+ * against a different artifact. A failure is not surfaced: this only decides
+ * wording and which examples to offer, and `HealthBanner` already reports a
+ * backend that cannot answer. Falling back to generic copy is correct, not an
+ * error state.
+ */
+function useServedCorpus(): string | null {
+  const [corpus, setCorpus] = useState<string | null>(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    getModelMeta(controller.signal)
+      .then((meta) => setCorpus(meta.corpus ?? null))
+      .catch(() => undefined)
+    return () => controller.abort()
+  }, [])
+
+  return corpus
+}
+
 export default function App() {
   const activeTab = useHashTab()
+  const domain = domainFor(useServedCorpus())
 
   return (
     <div className="min-h-screen bg-plane">
@@ -51,8 +77,13 @@ export default function App() {
               <h1 className="truncate text-base font-semibold text-ink">
                 Aspect-Based Sentiment Analysis
               </h1>
+              {/*
+                Follows the served artifact. Until /model answers -- and for a
+                corpus domains.ts does not know -- it says what is true of
+                every artifact rather than guessing a subject.
+              */}
               <p className="truncate text-xs text-muted">
-                Laptop reviews, one aspect at a time
+                {domain ? `${domain.subject}, one aspect at a time` : 'One aspect at a time'}
               </p>
             </div>
             <ThemeToggle />
@@ -93,7 +124,7 @@ export default function App() {
           time it is opened rather than showing a stale snapshot.
         */}
         {activeTab === 'analysis' ? (
-          <AnalysisPage key="analysis" />
+          <AnalysisPage key="analysis" examples={domain?.examples} />
         ) : (
           <PerformancePage key="performance" />
         )}
@@ -101,9 +132,9 @@ export default function App() {
 
       <footer className="mx-auto max-w-5xl px-4 pb-8 pt-2">
         <p className="text-xs text-muted">
-          BERT with aspect attention, fine-tuned on the SemEval-2014 Task 4 laptop
-          corpus. Predictions are about the aspect term you give, not the sentence as
-          a whole.
+          BERT with aspect attention
+          {domain ? `, fine-tuned on ${domain.corpusName}` : ''}. Predictions are about
+          the aspect term you give, not the sentence as a whole.
         </p>
       </footer>
     </div>

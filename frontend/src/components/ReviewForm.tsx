@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import type { Example } from '../lib/domains'
 import { looksPresent } from '../lib/words'
 import { isApiError, predictSentiment } from '../services/api'
 import type { PredictResponse } from '../types'
@@ -11,55 +12,27 @@ interface ReviewFormProps {
   onResult: (result: PredictResponse, text: string) => void
   /** Lets the page react while a request is in flight. Optional. */
   onLoadingChange?: (loading: boolean) => void
+  /**
+   * One-click examples for the corpus being served; empty when the served
+   * artifact is one `domains.ts` does not recognise.
+   *
+   * They arrive from the caller rather than living here because they are only
+   * valid for one corpus: every example's aspect has to be a literal span of
+   * its own sentence, so a laptop sentence offered against a restaurant model
+   * teaches the wrong thing while looking authoritative.
+   */
+  examples?: readonly Example[]
 }
 
 const MAX_TEXT = 2000
 const MAX_ASPECT = 200
 
-/**
- * Examples worth one click each, chosen to show a different thing about the
- * model rather than to look varied.
- *
- * The empty state used to be a sentence of prose telling the user to type
- * something. The interesting behaviour of this model -- one sentence, opposite
- * sentiments; a neutral that means "mentioned, not judged"; a confident answer
- * about an aspect that is not there -- is hard to stumble into from a blank box
- * and immediate from these.
- */
-const EXAMPLES: ReadonlyArray<{
-  label: string
-  hint: string
-  text: string
-  aspect: string
-}> = [
-  {
-    label: 'Opposite in one sentence',
-    hint: 'Analyze “screen”, then “Battery life”, and compare',
-    text: 'Battery life is amazing but the screen is dim.',
-    aspect: 'screen',
-  },
-  {
-    label: 'Three aspects',
-    hint: 'One review, three verdicts',
-    text: 'The keyboard feels great, but the trackpad is unresponsive and the price is too high.',
-    aspect: 'trackpad',
-  },
-  {
-    label: 'Mentioned, not judged',
-    hint: 'What “neutral” actually means here',
-    text: 'It comes with a 500GB hard drive and a six-cell battery.',
-    aspect: 'hard drive',
-  },
-  {
-    label: 'An aspect that is absent',
-    hint: 'Confidently wrong, and flagged for it',
-    text: 'The battery life is great but the screen is dim.',
-    aspect: 'keyboard',
-  },
-]
-
 /** Sentence + aspect input, submitting to the predict endpoint. */
-export default function ReviewForm({ onResult, onLoadingChange }: ReviewFormProps) {
+export default function ReviewForm({
+  onResult,
+  onLoadingChange,
+  examples = [],
+}: ReviewFormProps) {
   const [text, setText] = useState('')
   const [aspect, setAspect] = useState('')
   const [validationError, setValidationError] = useState<string | null>(null)
@@ -82,7 +55,7 @@ export default function ReviewForm({ onResult, onLoadingChange }: ReviewFormProp
     onLoadingChange?.(busy)
   }
 
-  function applyExample(example: (typeof EXAMPLES)[number]) {
+  function applyExample(example: Example) {
     setText(example.text)
     setAspect(example.aspect)
     setValidationError(null)
@@ -142,24 +115,30 @@ export default function ReviewForm({ onResult, onLoadingChange }: ReviewFormProp
 
   return (
     <form onSubmit={handleSubmit} noValidate className="space-y-5">
-      <div>
-        <p className="text-xs font-medium uppercase tracking-wide text-muted">
-          Try an example
-        </p>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {EXAMPLES.map((example) => (
-            <button
-              key={example.label}
-              type="button"
-              onClick={() => applyExample(example)}
-              title={example.hint}
-              className="rounded-full border border-line bg-plane px-3 py-1 text-xs font-medium text-ink-2 transition-colors hover:border-accent/50 hover:bg-accent/10 hover:text-ink"
-            >
-              {example.label}
-            </button>
-          ))}
+      {/*
+        Hidden rather than empty when the corpus is unrecognised: a heading
+        over no buttons reads as a broken fetch.
+      */}
+      {examples.length > 0 && (
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-muted">
+            Try an example
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {examples.map((example) => (
+              <button
+                key={example.label}
+                type="button"
+                onClick={() => applyExample(example)}
+                title={example.hint}
+                className="rounded-full border border-line bg-plane px-3 py-1 text-xs font-medium text-ink-2 transition-colors hover:border-accent/50 hover:bg-accent/10 hover:text-ink"
+              >
+                {example.label}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       <div>
         <label htmlFor="review-text" className="block text-sm font-medium text-ink">

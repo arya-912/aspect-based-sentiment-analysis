@@ -4,6 +4,7 @@ import Card from '../components/Card'
 import ResultCard from '../components/ResultCard'
 import ReviewForm from '../components/ReviewForm'
 import SentimentBadge from '../components/SentimentBadge'
+import type { Example } from '../lib/domains'
 import type { PredictResponse, Sentiment } from '../types'
 
 /**
@@ -15,6 +16,11 @@ import type { PredictResponse, Sentiment } from '../types'
  * describe text that is no longer on screen. Keeping the text here is what
  * makes that check possible.
  */
+interface AnalysisPageProps {
+  /** Examples for the served corpus; omitted when it is unrecognised. */
+  examples?: readonly Example[]
+}
+
 interface Session {
   text: string
   /** Newest first, so a fresh prediction appears where the eye already is. */
@@ -37,7 +43,7 @@ function groupBySentiment(results: PredictResponse[]): Map<Sentiment, string[]> 
   return groups
 }
 
-export default function AnalysisPage() {
+export default function AnalysisPage({ examples }: AnalysisPageProps) {
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -73,7 +79,11 @@ export default function AnalysisPage() {
             specifically — so the same sentence can be positive about one and negative
             about another.
           </p>
-          <ReviewForm onResult={handleResult} onLoadingChange={setLoading} />
+          <ReviewForm
+            onResult={handleResult}
+            onLoadingChange={setLoading}
+            examples={examples}
+          />
         </Card>
       </div>
 

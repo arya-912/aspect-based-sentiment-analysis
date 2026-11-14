@@ -343,6 +343,34 @@ def test_predict_aspect_flag_is_null_when_the_masks_are_missing(client, mocked_r
     assert response.json()["aspect_in_text"] is None
 
 
+# ---- model metadata: corpus ------------------------------------------- #
+
+
+def test_model_reports_the_corpus_it_was_trained_on(client, mocked_registry):
+    """Taken from the artifact's recorded training path, not its version name.
+
+    A UI labels its domain and picks its examples from this, so reading the
+    version string -- a name someone chose -- would mislabel any artifact
+    named without the corpus in it.
+    """
+    mocked_registry._config = {
+        **(mocked_registry._config or {}),
+        "paths": {"raw_train": "training/data/raw/Restaurants_Train_v2.csv"},
+    }
+
+    body = client.get(f"{PREFIX}/model").json()
+    assert body["corpus"] == "Restaurants_Train_v2"
+
+
+def test_model_corpus_is_null_when_the_artifact_records_no_path(client, mocked_registry):
+    """Null, not a guess: an artifact without recorded paths says nothing."""
+    config = dict(mocked_registry._config or {})
+    config.pop("paths", None)
+    mocked_registry._config = config
+
+    assert client.get(f"{PREFIX}/model").json()["corpus"] is None
+
+
 # ---- predict: validation ---------------------------------------------- #
 
 

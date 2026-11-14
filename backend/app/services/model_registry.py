@@ -12,7 +12,7 @@ import json
 import logging
 import sys
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from ..core.config import PROJECT_ROOT, get_settings
@@ -189,6 +189,33 @@ class ModelRegistry:
         """The backbone the artifact was fine-tuned from."""
         config = self._config or {}
         return str((config.get("model") or {}).get("name") or "unknown")
+
+    @property
+    def corpus(self) -> str | None:
+        """Stem of the training file this artifact was fitted on.
+
+        ``absa-v1`` reports ``Laptop_Train_v2``, ``absa-rest-v1`` reports
+        ``Restaurants_Train_v2``. Read straight out of the artifact's recorded
+        ``paths.raw_train`` rather than guessed from the version string: the
+        version is a name someone chose, the path is what the trainer actually
+        read.
+
+        Deliberately not normalised to a domain word here. The service has no
+        list of domains and inventing one would make this endpoint wrong the
+        first time a corpus is added; a client that wants to label the domain
+        maps the stem itself and can fall back to saying nothing.
+
+        ``None`` when the artifact predates the field or recorded no paths --
+        every artifact built by ``build_artifact`` carries it, but a
+        hand-assembled one need not.
+        """
+        config = self._config or {}
+        raw_train = (config.get("paths") or {}).get("raw_train")
+        if not raw_train:
+            return None
+        # PurePosixPath, not Path: the config was written wherever training
+        # ran, and a POSIX path must not be re-parsed by Windows rules.
+        return PurePosixPath(str(raw_train)).stem or None
 
     @property
     def labels(self) -> list[str]:

@@ -121,6 +121,7 @@ def model_metadata() -> ModelMetaResponse:
     return ModelMetaResponse(
         version=registry.model_version,
         base_model=registry.base_model,
+        corpus=registry.corpus,
         labels=registry.labels,
         evaluation=evaluation or None,
     )

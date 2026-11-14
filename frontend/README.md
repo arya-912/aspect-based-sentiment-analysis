@@ -39,6 +39,7 @@ different origin needs that list widened in `backend/app/core/config.py`.
 src/
 ├── types/index.ts            shapes mirroring the backend schemas
 ├── lib/
+│   ├── domains.ts            per-corpus copy and examples
 │   ├── theme.ts              light / dark / system resolution
 │   ├── format.ts             percent and count formatting
 │   └── words.ts              word spans, attention-to-word mapping, aspect presence
@@ -115,6 +116,34 @@ position.** When a word occurs twice ("is" twice is entirely normal) two
 entries arrive with the same token and different weights, and nothing says
 which occurrence each belongs to, so every occurrence is shown at the higher
 figure.
+
+## The copy follows the served artifact
+
+`GET /model` reports `corpus` — the stem of the training file the artifact was
+actually fitted on (`Laptop_Train_v2`, `Restaurants_Train_v2`) — and
+`lib/domains.ts` maps it to the subject line, the footer's corpus citation and
+the one-click examples. Point the backend at `absa-rest-v1` and the UI says
+"Restaurant reviews" and offers restaurant sentences, with no rebuild.
+
+It reads `corpus` rather than `version` because the version is a name someone
+chose, while the path is what the trainer read. The backend deliberately does
+**not** normalise it to a domain word: it has no list of domains, and inventing
+one would make the endpoint wrong the first time a corpus is added.
+
+Each example's aspect has to be a literal span of its own sentence, which is
+the regime the model was fitted in, so the examples cannot be shared across
+corpora: offering a laptop sentence against a restaurant model teaches the
+wrong thing while looking authoritative. The restaurant set is four verbatim
+SemEval training sentences, original misspellings included, and each one's
+prediction was checked against its gold label. An unrecognised corpus gets
+generic copy and **no** examples rather than invented ones — the row is hidden
+entirely, since a heading over no buttons reads as a broken fetch.
+
+`App` asks once on mount and ignores failure: this only decides wording, and
+`HealthBanner` already reports a backend that cannot answer. That means
+`/model` is fetched twice when the Performance page is open, which is a tiny
+request and keeps that page's own loading, error and refetch-on-open behaviour
+unentangled from the header's.
 
 ## Visualization
 

@@ -617,6 +617,18 @@ cd frontend && npm install && npm run dev        # http://localhost:5173
 defaults to `http://localhost:8000`, and the backend's CORS policy already
 allows the Vite dev origin.
 
+**The UI follows whichever artifact is served.** `/model` reports `corpus` (the
+stem of the artifact's recorded training file), and the subject line, the
+footer's corpus citation and the one-click examples all come from it — so
+
+```bash
+ARTIFACT_DIR=training/artifacts/absa-rest-v1 uvicorn app.main:app --port 8000
+```
+
+serves restaurant metrics *and* restaurant examples with no rebuild. An
+unrecognised corpus falls back to generic copy and no examples, because every
+example's aspect must be a literal span of its own sentence.
+
 The Analysis screen keeps the results for one sentence rather than replacing
 them, so several aspects of the same review sit side by side — which is the
 only way a UI can show the thing that distinguishes this task. The attention is

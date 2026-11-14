@@ -82,6 +82,13 @@ export interface ModelMetaResponse {
   base_model: string
   task: string
   labels: string[]
+  /**
+   * Stem of the training file the artifact was fitted on, e.g.
+   * `Laptop_Train_v2`. The UI's copy and its examples follow this rather than
+   * `version`, which is only a name someone chose. Null when the artifact
+   * records no training path; optional because an older backend omits it.
+   */
+  corpus?: string | null
   /** Null when the artifact ships without a metrics report. */
   evaluation: ModelEvaluation | null
 }

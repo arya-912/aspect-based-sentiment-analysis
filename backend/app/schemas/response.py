@@ -74,6 +74,16 @@ class ModelMetaResponse(BaseModel):
     base_model: str
     task: str = "aspect-based-sentiment-analysis"
     labels: list[str]
+    corpus: str | None = Field(
+        None,
+        description=(
+            "Stem of the training file the artifact was fitted on, e.g. "
+            "'Laptop_Train_v2' or 'Restaurants_Train_v2'. Taken from the "
+            "artifact's recorded paths, not from its version name, so a UI can "
+            "label the domain and offer examples that belong to it. Null when "
+            "the artifact records no training path."
+        ),
+    )
     evaluation: dict[str, Any] | None = Field(
         None, description="Headline metrics from the artifact's metrics.json."
     )

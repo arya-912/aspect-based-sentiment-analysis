@@ -8,7 +8,7 @@ aspect.
 POST /api/v1/predict   {"text": "...", "aspect": "..."}  -> sentiment, scores, attention, aspect_in_text
                        (422 if the aspect is not in the text — the model cannot abstain)
 GET  /api/v1/health                                      -> liveness + model readiness
-GET  /api/v1/model                                       -> which model, and how it scored
+GET  /api/v1/model                                       -> which model, which corpus, and how it scored
 ```
 
 ## Layout
@@ -28,7 +28,7 @@ backend/
 │   │   ├── model_registry.py   singleton holding the loaded artifact
 │   │   └── predictor.py        encode -> forward -> softmax -> label, attention, aspect check
 │   └── routes/sentiment.py     the three endpoints
-├── tests/                      86 tests, no artifact needed
+├── tests/                      88 tests, no artifact needed
 └── requirements.txt
 ```
 
@@ -90,6 +90,16 @@ Whitespace-only input is rejected as 422, not 400: `min_length=1` alone accepts
 `" "`, which would otherwise reach the tokenizer and surface as a different
 status for what is really the same mistake.
 
+**`/model` reports the corpus, not just the version.** `corpus` is the stem of
+the artifact's recorded `paths.raw_train` (`Laptop_Train_v2`,
+`Restaurants_Train_v2`), so a client can label the domain and offer examples
+that belong to it. Read from the path rather than the version string because
+the version is a name someone chose and the path is what the trainer actually
+read. It is *not* normalised to a domain word here: this service has no list of
+domains, and inventing one would make the endpoint wrong the first time a
+corpus is added, so the mapping lives in the client. `null` when the artifact
+records no paths.
+
 **An absent aspect is refused, not answered.** The head is a softmax over three
 polarities with no way to abstain — nothing in training taught it one, since
 every SemEval aspect term is a literal span of its sentence — so an aspect the
@@ -140,7 +150,7 @@ it is logged at ERROR instead. Both have tests asserting nothing leaks.
 cd backend && python -m pytest tests/ -q
 ```
 
-86 tests, and **none of them need the artifact**. `conftest.py` provides a fake
+88 tests, and **none of them need the artifact**. `conftest.py` provides a fake
 model (fixed logits `[0.1, 0.2, 0.7]` and a deliberately uneven attention row),
 a fake encoder laying out `[CLS]` / review / aspect slots with a tiny fake
 tokenizer, and a fake label map, injected into the registry singleton and
