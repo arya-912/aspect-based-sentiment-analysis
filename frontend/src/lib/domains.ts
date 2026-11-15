@@ -99,6 +99,24 @@ const RESTAURANTS: Domain = {
 }
 
 /**
+ * The joint model is fitted on both SemEval-2014 domains pooled, so it is the
+ * one artifact where both example sets are in regime. Two from each, keeping
+ * the mixed-polarity case from each domain -- the point of the joint model is
+ * that one model covers both, and examples from only one domain would hide
+ * that.
+ */
+const JOINT: Domain = {
+  subject: 'Laptop and restaurant reviews',
+  corpusName: 'the SemEval-2014 Task 4 laptop and restaurant corpora, pooled',
+  examples: [
+    LAPTOPS.examples[0],
+    RESTAURANTS.examples[0],
+    LAPTOPS.examples[2],
+    RESTAURANTS.examples[3],
+  ],
+}
+
+/**
  * MAMS is built from restaurant reviews, so it inherits that domain's
  * examples; only the citation differs. Every MAMS sentence carries at least
  * two aspects with *different* polarities, which is the one corpus where the
@@ -111,6 +129,10 @@ const MAMS: Domain = {
 
 /** Substring of the corpus stem, lower-cased -> domain. First match wins. */
 const BY_CORPUS: ReadonlyArray<readonly [string, Domain]> = [
+  // `joint` first: a pooled corpus is checked before the single-domain names
+  // so a file called `Joint_Laptop_Restaurant` cannot match `laptop` and be
+  // mislabelled as the laptop-only model.
+  ['joint', JOINT],
   ['laptop', LAPTOPS],
   ['restaurant', RESTAURANTS],
   ['mams', MAMS],

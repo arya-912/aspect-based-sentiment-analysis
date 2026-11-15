@@ -508,6 +508,67 @@ Wall-clock training time is not comparable between the two runs: the machine
 was not quiet during the ablation, so its 3550s against 2550s reflects load,
 not architecture. The ablated model has strictly fewer parameters.
 
+## Two domains, one model
+
+The laptop and restaurant corpora share a label set, an annotation scheme and
+a release, so they can simply be pooled. `merge_corpora.py` concatenates them
+and `configs/joint.yaml` trains one artifact, `absa-joint-v1`, on 5,915 pairs
+from 3,432 sentences — everything else identical to `default.yaml`.
+
+```bash
+cd training
+python merge_corpora.py data/raw/Laptop_Train_v2.csv data/raw/Restaurants_Train_v2.csv \
+    --out data/raw/Joint_Train.csv
+python merge_corpora.py data/raw/Laptops_Test_Gold.csv data/raw/Restaurants_Test_Gold.csv \
+    --out data/raw/Joint_Test_Gold.csv
+python train.py --config configs/joint.yaml train --prepare
+```
+
+The merge goes through `load_raw_csv` rather than `pd.concat` and carries
+provenance in the id (`laptop:2339`, `restaurants:813..`) rather than a new
+column — `Laptop_Train_v2.csv` has a trailing comma in its header and seven
+rows whose real `to` offset lives in the resulting extra column, which
+`_realign_shifted_rows` locates as `df.columns[-1]`. A `source` column would
+silently take its place and corrupt those rows.
+
+The point of the pooled model is that it is **not** a trade: scored on each
+official gold test set separately, it is ahead of the specialist on both.
+
+| | laptops (638) | restaurants (1,120) |
+| --- | --- | --- |
+| specialist accuracy | 0.7884 | 0.8384 |
+| **`absa-joint-v1` accuracy** | **0.7931** | **0.8473** |
+| specialist macro F1 | 0.7474 | 0.7595 |
+| **`absa-joint-v1` macro F1** | **0.7563** | **0.7808** |
+
+Per-class F1, joint against the matching specialist:
+
+| label | laptops: specialist → joint | restaurants: specialist → joint |
+| --- | --- | --- |
+| negative | 0.7340 → 0.7297 | 0.7908 → **0.7969** |
+| neutral | 0.6169 → **0.6518** | 0.5773 → **0.6307** |
+| positive | 0.8912 → 0.8876 | 0.9103 → **0.9149** |
+
+Nearly all of the gain is `neutral`, the class both specialists are worst at
+and the one with the least data in either corpus alone: +3.5 points of F1 on
+laptops and +5.3 on restaurants. `positive` moves by a fraction of a point in
+either direction. Pooling helps where the evidence was thin, which is the
+result you would hope for and not the one you can assume: the two domains'
+vocabularies barely overlap, and cross-domain transfer without pooling is
+clearly worse than either specialist (`absa-v1` scores 0.7964 / 0.7110 on
+restaurants, `absa-rest-v1` 0.7665 / 0.7215 on laptops).
+
+On the pooled 1,758-example test set it reports 0.8276 accuracy / 0.7715 macro
+F1, which is a *different* benchmark — the restaurant test set is larger and
+easier, so the pooled figure sits between the two domains and should not be
+compared with the laptop-only numbers above.
+
+Same caveat as the ablation: one seed per arm, so read this as one clean
+comparison rather than a settled effect size. Training ran ~22 minutes per
+epoch on CPU, best epoch 3 by validation macro F1, with validation loss
+diverging after epoch 2 (0.617 → 0.697 → 1.025 → 1.455) exactly as the
+single-domain runs do.
+
 ## Serving
 
 The backend wraps a trained artifact behind three endpoints:
@@ -628,6 +689,13 @@ ARTIFACT_DIR=training/artifacts/absa-rest-v1 uvicorn app.main:app --port 8000
 serves restaurant metrics *and* restaurant examples with no rebuild. An
 unrecognised corpus falls back to generic copy and no examples, because every
 example's aspect must be a literal span of its own sentence.
+
+One model is served at a time, so Performance always reports *that* model's
+`metrics.json`. To cover both domains from a single backend, serve the
+pooled `absa-joint-v1` (`configs/joint.yaml`): the UI then says "Laptop and
+restaurant reviews" and offers examples from both. It is not a compromise
+artifact — it beats each specialist on that specialist's own test set, see
+[Two domains, one model](#two-domains-one-model).
 
 The Analysis screen keeps the results for one sentence rather than replacing
 them, so several aspects of the same review sit side by side — which is the
