@@ -1,0 +1,56 @@
+# Ablation arm for MAMS-ATSA: identical to mams.yaml except that the aspect
+# attention is removed, written to artifacts/absa-mams-noattn.
+#
+# Why this pair matters more than the laptop one. `no_attention.yaml` vs
+# `default.yaml` gave +0.043 macro F1, but only ~12% of laptop sentences carry
+# mixed polarity, so the ablated model could still score well by reading
+# sentence-level sentiment and ignoring the aspect. MAMS deletes exactly those
+# sentences at corpus-construction time: every sentence has at least two
+# aspects with *different* gold labels. A model that cannot tell its aspects
+# apart therefore has to be wrong about at least one aspect of every sentence,
+# and the gap here is an effect size rather than a narrow win on easy ground.
+#
+# `paths.processed_dir` is deliberately the *same* directory as mams.yaml.
+# `prepare` writes train.csv/val.csv by fixed name, so both arms read the
+# identical split -- which is what makes the two scores comparable. Run
+# mams.yaml first (or with --prepare), then this one without --prepare.
+#
+# Every other value is a verbatim copy of mams.yaml, the seed included. Keep
+# the two files in step: changing anything else here confounds the comparison.
+seed: 42
+
+model:
+  name: bert-base-uncased
+  max_length: 128
+  dropout: 0.1
+  num_labels: 3
+  use_attention: false
+
+training:
+  epochs: 4
+  batch_size: 16
+  lr: 3e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  max_grad_norm: 1.0
+  val_fraction: 0.1
+  early_stopping_patience: 2
+  keep_checkpoint: false
+
+paths:
+  raw_train: training/data/raw/MAMS_Train.csv
+  official_test: training/data/raw/MAMS_Test.csv
+  processed_dir: training/data/processed/splits-mams
+  artifacts_dir: training/artifacts
+
+artifact:
+  version: absa-mams-noattn
+
+data:
+  labels: [negative, neutral, positive]
+  class_weighting: true
+
+optim:
+  head_lr: 1.0e-4
+  eval_batch_size: 64
+  num_workers: 0

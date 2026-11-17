@@ -411,33 +411,55 @@ def test_an_artifact_without_the_flag_reloads_with_attention(built):
     assert reloaded.attention is not None
 
 
-def test_the_ablation_config_differs_from_the_default_only_as_intended():
+#: Every config key an ablation pair must hold in common. ``paths.processed_dir``
+#: is in here deliberately: both arms have to read the *same* prepared split,
+#: or the two scores are not comparable.
+ABLATION_SHARED_KEYS = (
+    "seed", "model.name", "model.max_length", "model.dropout",
+    "model.num_labels", "training.epochs", "training.batch_size",
+    "training.lr", "training.weight_decay", "training.warmup_ratio",
+    "training.max_grad_norm", "training.val_fraction",
+    "training.early_stopping_patience", "training.keep_checkpoint",
+    "data.class_weighting", "data.labels", "optim.head_lr",
+    "optim.eval_batch_size", "paths.raw_train", "paths.official_test",
+    "paths.processed_dir", "paths.artifacts_dir",
+)
+
+#: (base config, ablation config, the ablation's artifact version).
+ABLATION_PAIRS = [
+    ("default.yaml", "no_attention.yaml", "absa-noattn"),
+    ("mams.yaml", "mams_no_attention.yaml", "absa-mams-noattn"),
+]
+
+
+@pytest.mark.parametrize("base_name, ablation_name, version", ABLATION_PAIRS)
+def test_an_ablation_config_differs_from_its_base_only_as_intended(
+    base_name, ablation_name, version
+):
     """The comparison is only valid if nothing else was changed.
 
-    Guards the two files drifting apart: a later edit to default.yaml that is
-    not mirrored would quietly turn the ablation into a confounded run.
+    Guards the files drifting apart: a later edit to a base config that is not
+    mirrored would quietly turn its ablation into a confounded run. The MAMS
+    pair matters most -- it is the one where the ablated model cannot fall back
+    on sentence-level sentiment, so it is the arm the architecture's claim
+    actually rests on.
     """
     from pathlib import Path
 
     from src.config import PROJECT_ROOT
 
-    default = load_config(PROJECT_ROOT / "training" / "configs" / "default.yaml")
-    ablation = load_config(PROJECT_ROOT / "training" / "configs" / "no_attention.yaml")
+    configs = PROJECT_ROOT / "training" / "configs"
+    base = load_config(configs / base_name)
+    ablation = load_config(configs / ablation_name)
 
     assert get(ablation, "model.use_attention") is False
-    assert get(default, "model.use_attention", True) is True
-    assert get(ablation, "artifact.version") == "absa-noattn"
+    assert get(base, "model.use_attention", True) is True
+    assert get(ablation, "artifact.version") == version
+    assert get(base, "artifact.version") != version
 
-    for key in ("seed", "model.name", "model.max_length", "model.dropout",
-                "model.num_labels", "training.epochs", "training.batch_size",
-                "training.lr", "training.weight_decay", "training.warmup_ratio",
-                "training.max_grad_norm", "training.val_fraction",
-                "training.early_stopping_patience", "training.keep_checkpoint",
-                "data.class_weighting", "data.labels", "optim.head_lr",
-                "optim.eval_batch_size", "paths.raw_train", "paths.official_test",
-                "paths.processed_dir", "paths.artifacts_dir"):
-        assert get(default, key) == get(ablation, key), key
-    assert Path(get(ablation, "config_path")).name == "no_attention.yaml"
+    for key in ABLATION_SHARED_KEYS:
+        assert get(base, key) == get(ablation, key), key
+    assert Path(get(ablation, "config_path")).name == ablation_name
 
 
 # ---- incomplete artifacts --------------------------------------------- #
