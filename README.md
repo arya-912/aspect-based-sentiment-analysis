@@ -587,9 +587,14 @@ GET  /api/v1/model
 
 POST /api/v1/insights          {"reviews": ["..."], "aspects": ["..."]?}
 GET  /api/v1/aspects?text=...  candidate aspects, no model needed
-GET  /api/v1/products          the demo catalogue
+
+GET  /api/v1/products          the active catalogue
 GET  /api/v1/products/insights every product scored on every aspect
 GET  /api/v1/products/{slug}   one product, its reviews and its breakdown
+POST /api/v1/catalogue/upload  replace the catalogue with a CSV (multipart)
+GET  /api/v1/catalogue/status  which catalogue, and scoring progress
+GET  /api/v1/catalogue/sample  a sample CSV in the upload format
+POST /api/v1/catalogue/reset   back to the built-in demo catalogue
 ```
 
 ```console
@@ -753,11 +758,114 @@ and the storefront's breakdowns are cached per process, because scoring the
 whole catalogue cold is ~8s of CPU. The UI shows that as a loading state
 rather than hiding it.
 
+## Bringing your own reviews
+
+The Store tab runs on the built-in demo catalogue or on a CSV you upload.
+`POST /api/v1/catalogue/upload` replaces the active catalogue **in the
+server's memory only** — a restart returns to the demo one, which is the
+right default for a demo surface and stops a server quietly serving a file
+somebody uploaded weeks ago.
+
+### The upload format
+
+| Column | Required | Notes |
+| --- | --- | --- |
+| `product_name` | yes | rows are grouped by this |
+| `review_text` | yes | one review per row; under 12 characters is dropped |
+| `category` | see below | `laptop` or `restaurant` |
+| `price` | no | shown as given, e.g. `$1099` or `$$$` |
+| `rating` | no | 1–5 stars, averaged per product |
+
+Real exports never use those names, so a fixed table of **aliases** is
+accepted too — `name`, `business_name`, `title`, `item` for the product;
+`text`, `review`, `content`, `body` for the review; `stars`, `stars_review`,
+`reviews.rating` for the rating. The list is explicit rather than fuzzy: a
+guess at which column holds the review would produce a catalogue of nonsense
+silently, where an unrecognised header produces a 422 naming what is missing
+and what it would have accepted.
+
+`category` may be left out of the file and chosen once for the whole upload
+(the `default_category` form field, a dropdown in the UI). A single-domain
+export has no reason to repeat it on every row, and most real ones do not
+have the column at all.
+
+`GET /api/v1/catalogue/sample` serves a sample file, so the format has one
+definition and it sits next to the parser that enforces it.
+
+### Caps, and why they are what they are
+
+| Cap | Value | Reason |
+| --- | --- | --- |
+| file size | 20 MB | twice the reference dataset |
+| rows | 50,000 | checked while parsing, so a huge file is abandoned early |
+| products | 24, most-reviewed first | each one costs ~2.5s to score |
+| reviews per product | 15 | ~14 aspect judgements; past that the shares stop moving |
+
+Scoring is the binding constraint. Every aspect occurrence is a BERT forward
+pass, so an uncapped upload is a denial of service against a CPU-bound
+server. A product that was sampled down still reports how many reviews the
+file held for it, and the shelf says "15 of 187".
+
+### Ranking: a lower bound, not the raw share
+
+The shelf ranks on the **Wilson 95% lower bound** of each aspect's positive
+share, not the share itself. Ranking on the share puts one lucky review above
+fifty good ones — 1/1 and 45/50 are 1.00 and 0.90, so the single review wins.
+Their lower bounds are 0.21 and 0.79, which is the order anyone would want.
+On the reference dataset this is not hypothetical: by raw share two
+restaurants with 3/3 positive `food` sentences tie for first, above one at
+9/10. Every score is printed with its `n`.
+
+`score` is computed server-side so the single-aspect sort and the weighted
+"best for me" ranking cannot disagree about what "best" means. The weighted
+ranking is a weighted mean of those bounds over the aspects a product is
+actually discussed on; a product discussed on none of the weighted aspects
+reports "cannot be compared" rather than scoring zero, since ranking an
+unreviewed product below a disliked one is not what the data says.
+
+### Scoring progress
+
+A full 24-product catalogue is ~36–51s of CPU, so it runs in a background
+thread and the UI polls `GET /api/v1/catalogue/status` for progress. The
+shelf renders from `/products` immediately; scores fill in as they land.
+Measured on the machine this was built on, with `absa-joint-v1`:
+
+| Step | Time |
+| --- | --- |
+| parse a 9.3 MB / 14,351-row CSV | 0.12s |
+| `POST /catalogue/upload` (same file, end to end) | 0.18s |
+| background scoring, 24 products | 51s (~2.1s/product) |
+| one product on demand | ~1.5s |
+| any endpoint, warm cache | ~2ms |
+
+### Limits worth stating
+
+- **Aspects come from the SemEval-2014 gold vocabulary, which covers laptops
+  and restaurants only.** An upload in any other category parses fine and
+  then shows few aspects or none. The upload is rejected outright for a
+  category outside those two, rather than accepted into an empty-looking page.
+- The storefront's aspects are **fixed per-category sort keys**, not extracted
+  per product — a shelf cannot be ordered by an aspect only some products have.
+- Shares are over the sentences that mention an aspect, not over all reviews.
+- An upload is not persisted and not validated beyond its shape: it is a demo
+  surface, not an ingestion pipeline.
+
+### The dataset this was built against
+
+A Yelp restaurant extract — 14,351 reviews across 2,526 businesses, with
+business names and 1–5 star ratings
+([Zenodo record 18723813](https://zenodo.org/records/18723813), CC BY 4.0
+there, derived from the Yelp Open Dataset, whose own agreement also applies).
+It is not committed: raw datasets stay out of the repo. Reviews per business
+run from 1 to 187 with a median of 3, which is what makes the lower-bound
+ranking visibly different from the raw share.
+
 ## Frontend
 
 Four sections, each a URL fragment: `#analysis` analyses one review,
-`#insights` breaks a pasted review set down by aspect, `#store` is the demo
-storefront, and `#performance` shows the served model's metrics.
+`#insights` breaks a pasted review set down by aspect, `#store` is the
+storefront — demo catalogue or your own CSV, ranked by one aspect or by
+weights you set — and `#performance` shows the served model's metrics.
 
 ```bash
 cd backend && uvicorn app.main:app --port 8000   # must be up first
@@ -832,9 +940,9 @@ and `python training/export_demo_catalogue.py`.
 | Suite | Count | Needs an artifact? |
 | --- | --- | --- |
 | `training/tests` | 181 | no — tiny encoder built from config |
-| `backend/tests` | 198 | no — mocked registry |
-| `frontend` | 376 | no — mocked API client |
+| `backend/tests` | 274 | no — mocked registry |
+| `frontend` | 415 | no — mocked API client |
 
-755 in all, every one offline and on CPU. The frontend suite is Vitest +
+870 in all, every one offline and on CPU. The frontend suite is Vitest +
 Testing Library (`npm test`); `npm run build` type-checks it as well, since
 `tsconfig.json` references `tsconfig.test.json`.
