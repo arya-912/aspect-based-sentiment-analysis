@@ -23,5 +23,8 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  /* The app build does not typecheck the tests; tsconfig.test.json does,
+     with the vitest and jest-dom globals added. */
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test"]
 }
