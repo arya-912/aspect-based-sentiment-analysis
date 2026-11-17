@@ -2,20 +2,27 @@ import { useEffect, useState } from 'react'
 
 import HealthBanner from './components/HealthBanner'
 import ThemeToggle from './components/ThemeToggle'
-import { domainFor } from './lib/domains'
+import { domainFor, domainKeyFor } from './lib/domains'
 import AnalysisPage from './pages/AnalysisPage'
+import InsightsPage from './pages/InsightsPage'
 import PerformancePage from './pages/PerformancePage'
+import StorePage from './pages/StorePage'
 import { getModelMeta } from './services/api'
 
-type Tab = 'analysis' | 'performance'
+type Tab = 'analysis' | 'insights' | 'store' | 'performance'
 
 const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
   { id: 'analysis', label: 'Analysis' },
+  { id: 'insights', label: 'Insights' },
+  { id: 'store', label: 'Store' },
   { id: 'performance', label: 'Performance' },
 ]
 
+const TAB_IDS: ReadonlySet<string> = new Set(TABS.map((tab) => tab.id))
+
 function tabFromHash(): Tab {
-  return window.location.hash === '#performance' ? 'performance' : 'analysis'
+  const id = window.location.hash.replace(/^#/, '')
+  return TAB_IDS.has(id) ? (id as Tab) : 'analysis'
 }
 
 /**
@@ -61,7 +68,11 @@ function useServedCorpus(): string | null {
 
 export default function App() {
   const activeTab = useHashTab()
-  const domain = domainFor(useServedCorpus())
+  const corpus = useServedCorpus()
+  const domain = domainFor(corpus)
+  // The vocabulary key the insights page narrows extraction with: the same
+  // lookup, reported as the backend's own word rather than as UI copy.
+  const domainKey = domainKeyFor(corpus)
 
   return (
     <div className="min-h-screen bg-plane">
@@ -123,11 +134,14 @@ export default function App() {
           Remounted per tab via `key`, so the Performance page refetches each
           time it is opened rather than showing a stale snapshot.
         */}
-        {activeTab === 'analysis' ? (
+        {activeTab === 'analysis' && (
           <AnalysisPage key="analysis" examples={domain?.examples} />
-        ) : (
-          <PerformancePage key="performance" />
         )}
+        {activeTab === 'insights' && (
+          <InsightsPage key="insights" domain={domain} domainKey={domainKey} />
+        )}
+        {activeTab === 'store' && <StorePage key="store" />}
+        {activeTab === 'performance' && <PerformancePage key="performance" />}
       </main>
 
       <footer className="mx-auto max-w-5xl px-4 pb-8 pt-2">

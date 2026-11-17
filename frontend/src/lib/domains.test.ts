@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { domainFor } from './domains'
+import { domainFor, domainKeyFor } from './domains'
 import { looksPresent } from './words'
 
 describe('domainFor', () => {
@@ -91,5 +91,36 @@ describe('every example is in regime', () => {
     expect(refusals).toHaveLength(1)
     expect(refusals[0].text).not.toContain(refusals[0].aspect)
     expect(looksPresent(refusals[0].text, refusals[0].aspect)).toBe(false)
+  })
+})
+
+describe('domainKeyFor', () => {
+  it.each([
+    ['Laptop_Train_v2', 'laptop'],
+    ['Laptops_Test_Gold', 'laptop'],
+    ['Restaurants_Train_v2', 'restaurant'],
+    ['MAMS_Train', 'restaurant'],
+  ])('maps %s to the API vocabulary key %s', (corpus, expected) => {
+    expect(domainKeyFor(corpus)).toBe(expected)
+  })
+
+  it('returns null for the pooled model, which serves both domains', () => {
+    // Narrowing to either would hide half of what the joint artifact does.
+    expect(domainKeyFor('Joint_Train')).toBeNull()
+  })
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['empty', ''],
+    ['unrecognised', 'Twitter_Sentiment_2019'],
+  ])('returns null for %s', (_label, corpus) => {
+    expect(domainKeyFor(corpus)).toBeNull()
+  })
+
+  it('is a key the API understands, not UI copy', () => {
+    // domainFor returns a sentence; this returns the enum the backend reads.
+    expect(domainKeyFor('Laptop_Train_v2')).toBe('laptop')
+    expect(domainFor('Laptop_Train_v2')?.subject).toBe('Laptop reviews')
   })
 })

@@ -4,10 +4,15 @@ import axios, { type AxiosInstance } from 'axios'
 
 import type {
   ApiError,
+  CatalogueInsights,
   HealthResponse,
+  InsightsRequest,
+  InsightsResponse,
   ModelMetaResponse,
   PredictRequest,
   PredictResponse,
+  ProductDetail,
+  ProductSummary,
 } from '../types'
 
 /** Falls back to the port `uvicorn app.main:app` serves on by default. */
@@ -134,6 +139,96 @@ export async function getModelMeta(signal?: AbortSignal): Promise<ModelMetaRespo
 export async function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
   try {
     const { data } = await client.get<HealthResponse>('/health', { signal })
+    return data
+  } catch (error) {
+    throw toApiError(error)
+  }
+}
+
+/* ---- aspect insights ------------------------------------------------- */
+
+/**
+ * Break a set of reviews down by aspect.
+ *
+ * The slow one: the backend makes a forward pass per aspect occurrence, so a
+ * large paste takes seconds. Callers should show progress rather than hide it.
+ *
+ * @throws {ApiRequestError} on any non-2xx response or transport failure.
+ */
+export async function getInsights(
+  payload: InsightsRequest,
+  signal?: AbortSignal,
+): Promise<InsightsResponse> {
+  try {
+    const { data } = await client.post<InsightsResponse>('/insights', payload, { signal })
+    return data
+  } catch (error) {
+    throw toApiError(error)
+  }
+}
+
+/**
+ * Candidate aspects in one text, without judging them.
+ *
+ * Needs no model, so this answers while the artifact is still loading.
+ *
+ * @throws {ApiRequestError} on any non-2xx response or transport failure.
+ */
+export async function getCandidateAspects(
+  text: string,
+  domain?: string | null,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  try {
+    const { data } = await client.get<string[]>('/aspects', {
+      params: domain ? { text, domain } : { text },
+      signal,
+    })
+    return data
+  } catch (error) {
+    throw toApiError(error)
+  }
+}
+
+/* ---- the demo storefront --------------------------------------------- */
+
+/** The catalogue. Carries no predictions, so it returns immediately. */
+export async function getProducts(signal?: AbortSignal): Promise<ProductSummary[]> {
+  try {
+    const { data } = await client.get<ProductSummary[]>('/products', { signal })
+    return data
+  } catch (error) {
+    throw toApiError(error)
+  }
+}
+
+/** One product, its reviews and its aspect breakdown. */
+export async function getProduct(
+  slug: string,
+  signal?: AbortSignal,
+): Promise<ProductDetail> {
+  try {
+    const { data } = await client.get<ProductDetail>(`/products/${encodeURIComponent(slug)}`, {
+      signal,
+    })
+    return data
+  } catch (error) {
+    throw toApiError(error)
+  }
+}
+
+/**
+ * Every product's score on every aspect, for sorting the shelf.
+ *
+ * Measured at ~8s cold on CPU -- it scores the whole catalogue -- and instant
+ * afterwards, since the backend caches it for the life of the process. Fetch
+ * it alongside the shelf rather than before it.
+ */
+export async function getCatalogueInsights(
+  signal?: AbortSignal,
+): Promise<CatalogueInsights> {
+  try {
+    const { data } = await client.get<CatalogueInsights>('/products/insights', { signal })
     return data
   } catch (error) {
     throw toApiError(error)

@@ -144,3 +144,21 @@ export function domainFor(corpus: string | null | undefined): Domain | null {
   const stem = corpus.toLowerCase()
   return BY_CORPUS.find(([needle]) => stem.includes(needle))?.[1] ?? null
 }
+
+/**
+ * The backend's own word for the corpus's domain, or null.
+ *
+ * Distinct from {@link domainFor}, which returns UI copy. This returns the
+ * key the API expects in an `insights` request's `domain` field, where it
+ * narrows the extraction vocabulary -- so a laptop model is not offered
+ * "atmosphere". The joint model returns null on purpose: it serves both
+ * domains, so narrowing to either would hide half of what it can do.
+ */
+export function domainKeyFor(corpus: string | null | undefined): string | null {
+  if (!corpus) return null
+  const stem = corpus.toLowerCase()
+  if (stem.includes('joint')) return null
+  if (stem.includes('laptop')) return 'laptop'
+  if (stem.includes('restaurant') || stem.includes('mams')) return 'restaurant'
+  return null
+}

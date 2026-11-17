@@ -105,3 +105,102 @@ export interface ApiError {
   /** HTTP status, or 0 when the request never reached the server. */
   status: number
 }
+
+/* ---- aspect insights over a review set ------------------------------- */
+
+/** One sentence, and the model's verdict on one aspect of it. */
+export interface AspectExample {
+  sentence: string
+  /**
+   * The aspect exactly as this sentence spells it. May differ in inflection
+   * from the aspect's label -- "batteries" grouped under "battery" -- because
+   * the model is asked about the text really present in the sentence.
+   */
+  surface: string
+  sentiment: Sentiment
+  confidence: number | null
+  /** Index into the request's `reviews`. */
+  review_index: number
+}
+
+/**
+ * Where an aspect came from. Never the model: it judges aspects it is handed
+ * and has no extraction step, so the UI has to be able to say who chose.
+ *
+ * `corpus` a SemEval gold term annotated 3+ times · `corpus-rare` annotated
+ * once or twice · `given` named by the caller.
+ */
+export type AspectSource = 'corpus' | 'corpus-rare' | 'given'
+
+/** What a review set says about one aspect. */
+export interface AspectSummary {
+  aspect: string
+  source: AspectSource
+  /** Sentences judged for this aspect. */
+  total: number
+  counts: Partial<Record<Sentiment, number>>
+  shares: Partial<Record<Sentiment, number>>
+  dominant: Sentiment
+  mean_confidence: number
+  /** True when this aspect drew more than one polarity. */
+  mixed: boolean
+  examples: AspectExample[]
+}
+
+/** Response of `POST /api/v1/insights`. */
+export interface InsightsResponse {
+  reviews: number
+  sentences: number
+  predictions: number
+  aspects: AspectSummary[]
+  /**
+   * Sentences where two aspects drew different polarities. Each one is a
+   * sentence a single-label classifier is necessarily wrong about, which is
+   * the whole case for doing this per aspect.
+   */
+  mixed_sentences: number
+  mixed_aspects: number
+  /** True when the request hit the backend's forward-pass ceiling. */
+  truncated: boolean
+  model_version: string
+}
+
+/** Body of `POST /api/v1/insights`. */
+export interface InsightsRequest {
+  reviews: string[]
+  aspects?: string[]
+  domain?: string
+  max_aspects?: number
+}
+
+/* ---- the demo storefront --------------------------------------------- */
+
+export interface ProductSummary {
+  slug: string
+  name: string
+  category: string
+  subtitle: string
+  price: string
+  review_count: number
+}
+
+export interface ProductDetail extends ProductSummary {
+  reviews: string[]
+  insights: InsightsResponse
+}
+
+/** One product's standing on one aspect, for sorting the shelf. */
+export interface ProductAspectScore {
+  aspect: string
+  positive_share: number
+  negative_share: number
+  total: number
+}
+
+/** Response of `GET /api/v1/products/insights`. */
+export interface CatalogueInsights {
+  aspects: string[]
+  /** Product slug -> its score on each aspect it is discussed on. */
+  products: Record<string, ProductAspectScore[]>
+  model_version: string
+}
