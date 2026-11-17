@@ -14,10 +14,12 @@ MODEL_NAME = "bert-base-uncased"
 def encoder():
     from src.preprocessing.tokenizer import ABSAEncoder
 
+    from conftest import unavailable  # tests/ is not a package
+
     try:
         return ABSAEncoder(MODEL_NAME, max_length=32)
     except Exception as exc:  # offline / no cached tokenizer
-        pytest.skip(f"tokenizer {MODEL_NAME} unavailable: {exc}")
+        unavailable(f"tokenizer {MODEL_NAME} unavailable: {exc}")
 
 
 @pytest.fixture

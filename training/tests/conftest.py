@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -14,6 +15,51 @@ if str(TRAINING_ROOT) not in sys.path:
     sys.path.insert(0, str(TRAINING_ROOT))
 
 RAW_DIR = TRAINING_ROOT / "data" / "raw"
+
+#: CI sets this. A fixture whose dependency *is* available there must fail
+#: rather than skip: the tokenizer tests used to skip when the
+#: ``bert-base-uncased`` fetch broke, so a hub outage or a renamed checkpoint
+#: read as a green check instead of a breakage. The corpus is a different
+#: case -- it is gitignored and genuinely absent in CI, so it keeps skipping
+#: and is accounted for by the skip budget below.
+REQUIRE_FIXTURES = os.environ.get("ABSA_REQUIRE_FIXTURES") == "1"
+
+
+def unavailable(reason: str) -> None:
+    """Skip locally; fail where the dependency is supposed to be present."""
+    if REQUIRE_FIXTURES:
+        pytest.fail(f"{reason} [ABSA_REQUIRE_FIXTURES=1, so this is a failure]")
+    pytest.skip(reason)
+
+
+# ---- skip budget ------------------------------------------------------ #
+#
+# The five corpus tests always skip in CI. That is expected, but it also
+# means "some tests skipped" is normal there -- which would hide a *sixth*
+# test starting to skip for some new reason (a renamed fixture, a broken
+# import guard). ``ABSA_MAX_SKIPS`` pins the number: CI passes the count it
+# expects, and one more than that fails the run.
+
+_skipped: set[str] = set()
+
+
+def pytest_runtest_logreport(report) -> None:
+    if report.skipped:
+        _skipped.add(report.nodeid)
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    budget = os.environ.get("ABSA_MAX_SKIPS")
+    if budget is None:
+        return
+    allowed = int(budget)
+    if len(_skipped) > allowed:
+        print(
+            f"\nABSA_MAX_SKIPS={allowed} but {len(_skipped)} tests skipped:",
+        )
+        for nodeid in sorted(_skipped):
+            print(f"  - {nodeid}")
+        session.exitstatus = 1
 
 #: A tiny randomly-initialised BERT. Keeps every model test on CPU, offline
 #: and fast -- the architecture under test is the attention and the head, not
@@ -37,7 +83,7 @@ def raw_dir() -> Path:
 def train_csv(raw_dir: Path) -> Path:
     path = raw_dir / "Laptop_Train_v2.csv"
     if not path.is_file():
-        pytest.skip(f"missing corpus: {path}")
+        pytest.skip(f"missing corpus: {path}")  # gitignored; budgeted in CI
     return path
 
 
@@ -45,7 +91,7 @@ def train_csv(raw_dir: Path) -> Path:
 def gold_csv(raw_dir: Path) -> Path:
     path = raw_dir / "Laptops_Test_Gold.csv"
     if not path.is_file():
-        pytest.skip(f"missing corpus: {path}")
+        pytest.skip(f"missing corpus: {path}")  # gitignored; budgeted in CI
     return path
 
 

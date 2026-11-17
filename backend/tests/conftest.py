@@ -10,6 +10,7 @@ real while inference is deterministic.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,34 @@ from fastapi.testclient import TestClient
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
+
+
+# ---- skip budget ------------------------------------------------------ #
+#
+# This suite needs no corpus, no artifact and no download, so nothing here
+# has a reason to skip and CI runs it with ABSA_MAX_SKIPS=0. The counterpart
+# in training/tests/conftest.py carries a budget of 5 for the gitignored
+# SemEval CSVs; the two suites share no importable module, so the hook is
+# repeated rather than imported.
+
+_skipped: set[str] = set()
+
+
+def pytest_runtest_logreport(report) -> None:
+    if report.skipped:
+        _skipped.add(report.nodeid)
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    budget = os.environ.get("ABSA_MAX_SKIPS")
+    if budget is None:
+        return
+    allowed = int(budget)
+    if len(_skipped) > allowed:
+        print(f"\nABSA_MAX_SKIPS={allowed} but {len(_skipped)} tests skipped:")
+        for nodeid in sorted(_skipped):
+            print(f"  - {nodeid}")
+        session.exitstatus = 1
 
 from app.core.config import Settings  # noqa: E402
 from app.main import create_app  # noqa: E402
