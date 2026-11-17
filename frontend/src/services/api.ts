@@ -5,6 +5,8 @@ import axios, { type AxiosInstance } from 'axios'
 import type {
   ApiError,
   CatalogueInsights,
+  CatalogueStatus,
+  CatalogueUploadResult,
   HealthResponse,
   InsightsRequest,
   InsightsResponse,
@@ -229,6 +231,70 @@ export async function getCatalogueInsights(
 ): Promise<CatalogueInsights> {
   try {
     const { data } = await client.get<CatalogueInsights>('/products/insights', { signal })
+    return data
+  } catch (error) {
+    throw toApiError(error)
+  }
+}
+
+
+/* ---- the active catalogue -------------------------------------------- */
+
+/** Where the sample CSV lives, for a plain download link. */
+export const SAMPLE_CSV_URL = `${BASE_URL}${API_PREFIX}/catalogue/sample`
+
+/**
+ * Which catalogue is active, and how far its scoring has got.
+ *
+ * Answers with no model loaded, so a page can say which file it is showing
+ * before the artifact finishes loading. Poll it while `scoring` is true.
+ */
+export async function getCatalogueStatus(
+  signal?: AbortSignal,
+): Promise<CatalogueStatus> {
+  try {
+    const { data } = await client.get<CatalogueStatus>('/catalogue/status', { signal })
+    return data
+  } catch (error) {
+    throw toApiError(error)
+  }
+}
+
+/**
+ * Replace the active catalogue with an uploaded CSV.
+ *
+ * In memory on the server only: a restart returns to the demo catalogue.
+ * A 422 carries a message naming exactly what to fix, so callers should
+ * surface it rather than replacing it with their own wording.
+ */
+export async function uploadCatalogue(
+  file: File,
+  defaultCategory?: string | null,
+  signal?: AbortSignal,
+): Promise<CatalogueUploadResult> {
+  const body = new FormData()
+  body.append('file', file)
+  if (defaultCategory) body.append('default_category', defaultCategory)
+  try {
+    // No explicit Content-Type: the browser has to set the multipart
+    // boundary itself, and the client's JSON default would break the upload.
+    const { data } = await client.post<CatalogueUploadResult>(
+      '/catalogue/upload',
+      body,
+      { signal, headers: { 'Content-Type': undefined } },
+    )
+    return data
+  } catch (error) {
+    throw toApiError(error)
+  }
+}
+
+/** Discard an uploaded catalogue and serve the built-in demo one again. */
+export async function resetCatalogue(signal?: AbortSignal): Promise<CatalogueStatus> {
+  try {
+    const { data } = await client.post<CatalogueStatus>('/catalogue/reset', null, {
+      signal,
+    })
     return data
   } catch (error) {
     throw toApiError(error)

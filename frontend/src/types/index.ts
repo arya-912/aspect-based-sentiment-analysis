@@ -182,6 +182,19 @@ export interface ProductSummary {
   subtitle: string
   price: string
   review_count: number
+  /**
+   * Mean star rating from an uploaded CSV, when it carried one.
+   *
+   * The reviewers' own overall score, not the model's. Shown beside the
+   * aspect breakdown precisely so the two can be compared: a 4.5-star
+   * restaurant whose `service` aspect is 70% negative is the case
+   * aspect-based analysis exists to surface.
+   */
+  rating: number | null
+  /** How many reviews the star rating was averaged over. */
+  rating_count: number
+  /** Reviews in the uploaded file before the per-product cap. */
+  reviews_seen: number
 }
 
 export interface ProductDetail extends ProductSummary {
@@ -194,13 +207,54 @@ export interface ProductAspectScore {
   aspect: string
   positive_share: number
   negative_share: number
+  /** Sentences judged for this aspect. Always shown beside the score. */
   total: number
+  /**
+   * Wilson 95% lower bound on the positive share -- **the field to rank by**.
+   *
+   * Ranking on `positive_share` puts one lucky review above fifty good ones:
+   * 1/1 and 45/50 are 1.00 and 0.90, but their lower bounds are 0.21 and
+   * 0.79. Computed server-side so the shelf and the weighted ranking cannot
+   * disagree about what "best" means.
+   */
+  score: number
 }
 
 /** Response of `GET /api/v1/products/insights`. */
 export interface CatalogueInsights {
   aspects: string[]
-  /** Product slug -> its score on each aspect it is discussed on. */
+  /**
+   * Product slug -> its score on each aspect it is discussed on. A product
+   * absent from this map is **not yet scored**, not unscoreable: scoring runs
+   * in the background, so poll the status endpoint rather than treating an
+   * empty map as "no data".
+   */
   products: Record<string, ProductAspectScore[]>
   model_version: string
+  scored: number
+  total: number
+  scoring: boolean
+}
+
+/** Response of `GET /api/v1/catalogue/status`. */
+export interface CatalogueStatus {
+  /** 'demo' or 'upload'. */
+  source: string
+  /** The uploaded file's name, or the built-in catalogue's label. */
+  source_name: string
+  products: number
+  scored: number
+  scoring: boolean
+  model_version: string
+  rows_used: number
+  products_found: number
+  truncated_products: boolean
+  truncated_reviews: boolean
+  /** A caveat to print verbatim, or empty. */
+  note: string
+}
+
+/** Response of `POST /api/v1/catalogue/upload`. */
+export interface CatalogueUploadResult extends CatalogueStatus {
+  warnings: string[]
 }
