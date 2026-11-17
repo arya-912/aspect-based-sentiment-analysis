@@ -8,6 +8,8 @@ the 503 and 404 paths -- exactly what these assert.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from app.services import catalogue
@@ -22,6 +24,22 @@ REVIEWS = [
 ]
 
 
+def wait_for_scoring(client, timeout: float = 10.0) -> dict:
+    """Block until the background scoring pass finishes.
+
+    The pass is a daemon thread; with the fake model it takes milliseconds,
+    but polling the status endpoint is what makes the assertion deterministic
+    rather than a sleep that is either flaky or slow.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = client.get(f"{PREFIX}/catalogue/status").json()
+        if not status["scoring"] and status["scored"] >= status["products"]:
+            return status
+        time.sleep(0.02)
+    raise AssertionError(f"scoring did not finish within {timeout}s")
+
+
 @pytest.fixture(autouse=True)
 def clean_caches():
     """The catalogue and lexicon caches are process-wide, like the registry.
@@ -30,12 +48,16 @@ def clean_caches():
     another test pass without computing anything -- or fail because a
     previous test cached against a different fake.
     """
+    catalogue.breakdowns.wait_for_idle()
     catalogue.load_catalogue.cache_clear()
     catalogue.breakdowns.clear()
+    catalogue.active.reset()
     load_lexicon.cache_clear()
     yield
+    catalogue.breakdowns.wait_for_idle()
     catalogue.load_catalogue.cache_clear()
     catalogue.breakdowns.clear()
+    catalogue.active.reset()
     load_lexicon.cache_clear()
 
 
@@ -230,16 +252,44 @@ class TestCatalogue:
         # ever changed, this would 404 instead.
         assert client.get(f"{PREFIX}/products/insights").status_code == 200
 
-    def test_catalogue_insights_scores_every_product(self, client):
+    def test_catalogue_insights_returns_what_is_scored_and_starts_the_rest(self, client):
+        # Scoring the whole catalogue is ~36s on CPU, so the endpoint answers
+        # with whatever is cached and kicks off a background pass rather than
+        # holding the connection open.
         body = client.get(f"{PREFIX}/products/insights").json()
-        slugs = {p["slug"] for p in client.get(f"{PREFIX}/products").json()}
-        assert set(body["products"]) == slugs
+        assert body["total"] == len(client.get(f"{PREFIX}/products").json())
+        assert body["scored"] <= body["total"]
         assert body["aspects"]
+
+    def test_the_background_pass_eventually_scores_every_product(self, client):
+        slugs = {p["slug"] for p in client.get(f"{PREFIX}/products").json()}
+        client.get(f"{PREFIX}/products/insights")
+        wait_for_scoring(client)
+
+        body = client.get(f"{PREFIX}/products/insights").json()
+        assert set(body["products"]) == slugs
+        assert body["scored"] == body["total"]
+        assert body["scoring"] is False
         for scores in body["products"].values():
             for score in scores:
                 assert 0.0 <= score["positive_share"] <= 1.0
                 assert 0.0 <= score["negative_share"] <= 1.0
+                assert 0.0 <= score["score"] <= 1.0
                 assert score["total"] > 0
+
+    def test_the_score_is_a_lower_bound_not_the_raw_share(self, client):
+        # The fix: ranking on positive_share alone puts 1/1 above 45/50.
+        client.get(f"{PREFIX}/products/insights")
+        wait_for_scoring(client)
+        body = client.get(f"{PREFIX}/products/insights").json()
+
+        checked = 0
+        for scores in body["products"].values():
+            for score in scores:
+                if score["positive_share"] > 0:
+                    assert score["score"] < score["positive_share"]
+                    checked += 1
+        assert checked > 0, "no positive shares to compare"
 
     def test_a_breakdown_is_computed_once_per_product(self, client, fake_model):
         slug = client.get(f"{PREFIX}/products").json()[0]["slug"]

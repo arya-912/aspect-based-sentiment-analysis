@@ -178,15 +178,24 @@ def words_of(sentence: str) -> list[Word]:
 
 
 def _match_terms(
-    sentence: str, entries: tuple[LexiconEntry, ...]
+    sentence: str,
+    entries: tuple[LexiconEntry, ...],
+    words: list[Word] | None = None,
 ) -> list[tuple[LexiconEntry, str]]:
     """Every lexicon term in ``sentence``, non-overlapping, longest first.
 
     Returns (entry, verbatim span). Non-overlapping because "battery life"
     and "battery" would otherwise both fire on one phrase and the dashboard
     would show two aspects where the review discussed one.
+
+    ``words`` lets a caller hand in the already-stemmed sentence. Stemming is
+    the expensive part of this function -- a regex pass plus a stem per word
+    -- and a caller matching several terms against the same sentence would
+    otherwise pay for it once per term. On the storefront's five fixed sort
+    keys that was five times the string work per sentence, which measured as
+    most of the time spent scoring a product.
     """
-    words = words_of(sentence)
+    words = words_of(sentence) if words is None else words
     if not words:
         return []
 
@@ -244,12 +253,14 @@ def extract_aspects(
 
     for review_index, review in enumerate(reviews):
         for sentence_index, sentence in enumerate(split_sentences(review)):
-            matched = _match_terms(sentence, common)
+            # Stemmed once and reused across both tiers.
+            words = words_of(sentence)
+            matched = _match_terms(sentence, common, words)
             if not matched:
                 # Second pass only where the common tier found nothing at
                 # all: the rare tier is one-off phrasing and would otherwise
                 # bury the aspects people actually write about.
-                matched = _match_terms(sentence, rare)
+                matched = _match_terms(sentence, rare, words)
             for entry, surface in matched:
                 hits.setdefault(entry.term, []).append(
                     Occurrence(
@@ -286,20 +297,32 @@ def locate_aspects(reviews: list[str], aspects: list[str]) -> list[AspectCandida
     chips. Matching is the same stem-based, whole-word, contiguous rule as the
     gate, so an aspect the user typed in another inflection still lines up.
     """
-    found: list[AspectCandidate] = []
-
+    entries: list[tuple[str, LexiconEntry]] = []
     for aspect in aspects:
         term_stems = tuple(stem(m.group()) for m in WORD_PATTERN.finditer(aspect))
         if not term_stems:
             continue
-        entry = LexiconEntry(term=aspect, count=0, domains=(), stems=term_stems)
+        entries.append(
+            (aspect, LexiconEntry(term=aspect, count=0, domains=(), stems=term_stems))
+        )
+    if not entries:
+        return []
 
-        occurrences: list[Occurrence] = []
-        surfaces: Counter[str] = Counter()
-        for review_index, review in enumerate(reviews):
-            for sentence_index, sentence in enumerate(split_sentences(review)):
-                for _, surface in _match_terms(sentence, (entry,)):
-                    occurrences.append(
+    occurrences: dict[str, list[Occurrence]] = {}
+
+    # Sentences outermost so each one is split and stemmed exactly once, and
+    # every aspect is matched against that one result. The aspects are
+    # matched independently rather than as one longest-first pass: these are
+    # a storefront's fixed sort keys, and "food" must still be found in a
+    # sentence that also mentions "food quality".
+    for review_index, review in enumerate(reviews):
+        for sentence_index, sentence in enumerate(split_sentences(review)):
+            words = words_of(sentence)
+            if not words:
+                continue
+            for aspect, entry in entries:
+                for _, surface in _match_terms(sentence, (entry,), words):
+                    occurrences.setdefault(aspect, []).append(
                         Occurrence(
                             review_index=review_index,
                             sentence_index=sentence_index,
@@ -307,15 +330,15 @@ def locate_aspects(reviews: list[str], aspects: list[str]) -> list[AspectCandida
                             surface=surface,
                         )
                     )
-                    surfaces[surface] += 1
-        if occurrences:
-            found.append(
-                AspectCandidate(
-                    aspect=aspect,
-                    occurrences=tuple(occurrences),
-                    source="given",
-                    lexicon_count=None,
-                )
-            )
+
+    found = [
+        AspectCandidate(
+            aspect=aspect,
+            occurrences=tuple(found_occurrences),
+            source="given",
+            lexicon_count=None,
+        )
+        for aspect, found_occurrences in occurrences.items()
+    ]
     found.sort(key=lambda c: (-c.total, c.aspect.lower()))
     return found
