@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .core.config import Settings, get_settings
 from .core.errors import ModelNotReadyError, register_error_handlers
+from .routes.insights import router as insights_router
 from .routes.sentiment import router as sentiment_router
 from .services.model_registry import registry
 
@@ -85,6 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     register_error_handlers(app)
     app.include_router(sentiment_router, prefix=settings.API_PREFIX)
+    app.include_router(insights_router, prefix=settings.API_PREFIX)
 
     @app.get("/", include_in_schema=False)
     def root() -> dict[str, str]:

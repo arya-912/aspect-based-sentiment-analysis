@@ -87,3 +87,104 @@ class ModelMetaResponse(BaseModel):
     evaluation: dict[str, Any] | None = Field(
         None, description="Headline metrics from the artifact's metrics.json."
     )
+
+
+class AspectExample(BaseModel):
+    """One sentence, and the model's verdict on one aspect of it."""
+
+    sentence: str
+    surface: str = Field(
+        ...,
+        description=(
+            "The aspect exactly as this sentence spells it. May differ in "
+            "inflection from the aspect's label -- 'batteries' grouped under "
+            "'battery' -- because the model is asked about the text that is "
+            "really in the sentence."
+        ),
+    )
+    sentiment: str
+    confidence: float | None = Field(None, ge=0.0, le=1.0)
+    review_index: int = Field(..., description="Which review in the request this came from.")
+
+
+class AspectSummaryResponse(BaseModel):
+    """What a review set says about one aspect."""
+
+    aspect: str
+    source: str = Field(
+        ...,
+        description=(
+            "Where the aspect came from, never from the model: 'corpus' (a "
+            "SemEval gold term annotated 3+ times), 'corpus-rare' (annotated "
+            "once or twice), or 'given' (named by the caller)."
+        ),
+    )
+    total: int = Field(..., description="Sentences judged for this aspect.")
+    counts: dict[str, int] = Field(..., description="Sentence count per label.")
+    shares: dict[str, float] = Field(..., description="Share of sentences per label.")
+    dominant: str
+    mean_confidence: float = Field(..., ge=0.0, le=1.0)
+    mixed: bool = Field(
+        ..., description="True when this aspect drew more than one polarity."
+    )
+    examples: list[AspectExample]
+
+
+class InsightsResponse(BaseModel):
+    """Per-aspect sentiment over a set of reviews."""
+
+    reviews: int
+    sentences: int
+    predictions: int = Field(..., description="Forward passes actually made.")
+    aspects: list[AspectSummaryResponse]
+    mixed_sentences: int = Field(
+        ...,
+        description=(
+            "Sentences where two aspects drew different polarities. Each one "
+            "is a sentence a single-label classifier is necessarily wrong "
+            "about, which is the case for doing this per aspect."
+        ),
+    )
+    mixed_aspects: int
+    truncated: bool = Field(
+        ...,
+        description="True when the request hit the forward-pass ceiling and some occurrences were not judged.",
+    )
+    model_version: str
+
+
+class ProductSummary(BaseModel):
+    """A catalogue entry, without its reviews."""
+
+    slug: str
+    name: str
+    category: str = Field(..., description="'laptop' or 'restaurant'.")
+    subtitle: str
+    price: str
+    review_count: int
+
+
+class ProductDetail(ProductSummary):
+    """A catalogue entry with its reviews and their aspect breakdown."""
+
+    reviews: list[str]
+    insights: InsightsResponse
+
+
+class ProductAspectScore(BaseModel):
+    """One product's standing on one aspect, for sorting the catalogue."""
+
+    aspect: str
+    positive_share: float = Field(..., ge=0.0, le=1.0)
+    negative_share: float = Field(..., ge=0.0, le=1.0)
+    total: int
+
+
+class CatalogueInsights(BaseModel):
+    """Every product scored on every aspect its category defines."""
+
+    aspects: list[str] = Field(..., description="The aspects available to sort by.")
+    products: dict[str, list[ProductAspectScore]] = Field(
+        ..., description="Product slug -> its score on each aspect it is discussed on."
+    )
+    model_version: str

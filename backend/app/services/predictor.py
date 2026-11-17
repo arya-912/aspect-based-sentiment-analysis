@@ -94,6 +94,99 @@ class PredictorService:
             model_version=self.registry.model_version,
         )
 
+    # ---- batched prediction ------------------------------------------- #
+
+    def predict_many(
+        self,
+        pairs: list[tuple[str, str]],
+        *,
+        include_attention: bool = False,
+        batch_size: int = 32,
+    ) -> list[PredictResponse]:
+        """Classify many (text, aspect) pairs in as few forward passes as possible.
+
+        The insights dashboard turns one pasted review set into hundreds of
+        pairs -- every aspect against every sentence that mentions it -- and
+        one forward pass each is the difference between a demo that answers
+        and a demo that times out. The encoder pads to ``max_length``, so the
+        examples stack without further work.
+
+        Attention is off by default: it is the most interesting field in a
+        single prediction and pure weight in an aggregate, where nothing
+        renders per-pair token weights.
+
+        A pair the encoder rejects is skipped rather than failing the batch,
+        because one malformed sentence in a pasted file should not lose the
+        other 200. Skipped pairs are logged and simply absent from the
+        result, so callers must match on ``aspect`` rather than by index.
+
+        Args:
+            pairs: (sentence, aspect) pairs. The aspect should be a span of
+                its sentence; nothing here re-checks that.
+            include_attention: return per-pair attention as well.
+            batch_size: pairs per forward pass.
+
+        Returns:
+            One :class:`PredictResponse` per *encodable* pair, in input order.
+
+        Raises:
+            ModelNotReadyError: 503, when the model has not loaded.
+        """
+        model = self.registry.get_model()
+        encoder = self.registry.get_encoder()
+        label_map = self.registry.get_label_map()
+        device = self._model_device(model)
+
+        encoded: list[tuple[str, str, dict[str, torch.Tensor]]] = []
+        for text, aspect in pairs:
+            try:
+                encoded.append((text, aspect, encoder.encode(text, aspect)))
+            except ValueError as exc:
+                LOGGER.info("skipping unencodable pair (aspect=%r): %s", aspect, exc)
+
+        results: list[PredictResponse] = []
+        for start in range(0, len(encoded), batch_size):
+            chunk = encoded[start : start + batch_size]
+            names = [name for name in MODEL_INPUTS if name in chunk[0][2]]
+            batch = {
+                name: torch.stack([item[2][name] for item in chunk]).to(device)
+                for name in names
+            }
+
+            with torch.no_grad():
+                output = model(**batch)
+            probabilities = torch.softmax(output["logits"].float(), dim=-1)
+
+            for row, (_, aspect, _) in enumerate(chunk):
+                predicted_id = int(probabilities[row].argmax(dim=-1).item())
+                # Sliced back to one example so the single-prediction helpers
+                # apply unchanged; they are all written against a batch of 1.
+                single = {name: tensor[row : row + 1] for name, tensor in batch.items()}
+                attention = None
+                if include_attention:
+                    one = {
+                        "logits": output["logits"][row : row + 1],
+                        "attention": (
+                            output["attention"][row : row + 1]
+                            if isinstance(output, dict) and output.get("attention") is not None
+                            else None
+                        ),
+                    }
+                    attention = self._attention(encoder, one, single)
+
+                results.append(
+                    PredictResponse(
+                        aspect=aspect,
+                        sentiment=self._decode(label_map, predicted_id),
+                        confidence=round(float(probabilities[row, predicted_id].item()), 4),
+                        scores=self._scores(label_map, probabilities[row]),
+                        attention=attention,
+                        aspect_in_text=self._aspect_in_text(single),
+                        model_version=self.registry.model_version,
+                    )
+                )
+        return results
+
     # ---- helpers ------------------------------------------------------ #
 
     @staticmethod

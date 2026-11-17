@@ -105,7 +105,27 @@ class FakeModel:
 
     def __call__(self, **kwargs: torch.Tensor) -> dict[str, torch.Tensor]:
         self.calls.append(kwargs)
-        return {"logits": self.logits, "attention": self.attention}
+        # Widened to whatever batch arrived, so the same double serves
+        # `predict` (batch of 1, unchanged) and `predict_many` (batch of n).
+        # A fake that always returned one row would make every batched test
+        # an IndexError rather than a test of batching.
+        ids = kwargs.get("input_ids")
+        rows = int(ids.shape[0]) if ids is not None and ids.dim() > 1 else 1
+        logits = self.logits
+        attention = self.attention
+        if rows != logits.shape[0]:
+            logits = logits[:1].expand(rows, -1).clone()
+        if attention is not None and rows != attention.shape[0]:
+            attention = attention[:1].expand(rows, -1).clone()
+        return {"logits": logits, "attention": attention}
+
+    def batch_sizes(self) -> list[int]:
+        """Rows per forward pass, so a test can assert batching happened."""
+        return [
+            int(call["input_ids"].shape[0])
+            for call in self.calls
+            if "input_ids" in call and call["input_ids"].dim() > 1
+        ]
 
     def parameters(self):
         """The real model has parameters; this one has none on purpose, which
