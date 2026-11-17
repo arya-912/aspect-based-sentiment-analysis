@@ -571,7 +571,9 @@ single-domain runs do.
 
 ## Serving
 
-The backend wraps a trained artifact behind three endpoints:
+The backend wraps a trained artifact behind seven endpoints: three for a
+single prediction, and four for the two demo surfaces described under
+[Aspect insights](#aspect-insights-and-the-demo-store).
 
 ```bash
 pip install -r backend/requirements.txt
@@ -579,9 +581,15 @@ cd backend && uvicorn app.main:app --reload --port 8000
 ```
 
 ```
-POST /api/v1/predict   {"text": "...", "aspect": "..."}
+POST /api/v1/predict           {"text": "...", "aspect": "..."}
 GET  /api/v1/health
 GET  /api/v1/model
+
+POST /api/v1/insights          {"reviews": ["..."], "aspects": ["..."]?}
+GET  /api/v1/aspects?text=...  candidate aspects, no model needed
+GET  /api/v1/products          the demo catalogue
+GET  /api/v1/products/insights every product scored on every aspect
+GET  /api/v1/products/{slug}   one product, its reviews and its breakdown
 ```
 
 ```console
@@ -665,9 +673,91 @@ artifact is missing the service still boots and reports
 answering 503 — easier to diagnose than a crash-looping container. See
 [`backend/README.md`](backend/README.md) for the full design notes.
 
+## Aspect insights and the demo store
+
+Two surfaces built on the same idea: one review set, broken down per aspect.
+
+**`#insights`** takes pasted or uploaded reviews, one per line, and reports a
+verdict per aspect with the sentences behind it — *screen: 71% negative (5 of
+7)*, and the five sentences. Its headline is `mixed_sentences`: how many
+sentences in **your** reviews carry two aspects with two different verdicts.
+Each one is a sentence a single-label classifier is necessarily wrong about,
+which is the case for aspect-based analysis made with the caller's own data
+rather than with a claim.
+
+**`#store`** is a mock storefront of eight products whose shelf sorts by one
+aspect. "Best battery" and "best screen" are different orderings of the same
+products, and one star rating — or one sentence-level sentiment score —
+collapses them into one. Changing the sort visibly reorders the shelf.
+
+The products are fictional; the reviews are not. Each is a real SemEval-2014
+sentence picked by its **gold polarity for that aspect**, so the contrast
+between products comes from human annotation rather than from text written to
+produce it, and no sentence appears under two products. Most are from the
+held-out test split; the laptop split is too thin to build contrasting
+products from (6 "battery life" sentences, all positive), so some laptop
+reviews are sentences the model trained on — which flatters it. The page says
+so. Regenerate with `python training/export_demo_catalogue.py`.
+
+### The gap this fills, and what it costs
+
+**The model has no aspect-extraction step.** SemEval-2014 Task 4 splits
+extraction and aspect sentiment into separate subtasks and only the second is
+modelled here: `/predict` takes the aspect as an *input*. So anything that
+accepts a raw review has to decide the aspects before the model can say
+anything, and that decision is not the model's.
+
+These endpoints decide it by matching **the corpora's own gold aspect terms**,
+exported to `backend/app/data/aspect_lexicon.json` by
+`training/export_aspect_lexicon.py` (2085 terms, two tiers: 312 annotated
+three or more times, and the rare tail tried only where the common tier finds
+nothing). The alternative was a POS tagger — spaCy noun chunks — which would
+find aspects the corpora never annotated, at the cost of a dependency and a
+model download in a project whose tests block network access on purpose. More
+to the point, a noun chunk is only a *plausible* aspect while a gold term is
+one the model was actually fitted on, and this model is confidently wrong
+off-distribution.
+
+What that costs, stated in the UI as well as here:
+
+- **An aspect no SemEval annotator marked is invisible.** Reviews of a product
+  category outside laptops and restaurants extract little or nothing, and the
+  page says that rather than showing an empty result as a failure.
+- **Lexicon matching has no word sense.** `feels` is a gold laptop aspect term,
+  so "the keyboard feels great" can surface `feels` as an aspect. The chips are
+  editable and every row reports which tier it came from.
+
+One property is guaranteed rather than hoped for: every extracted aspect is a
+**verbatim span of the sentence it was found in**, so a prediction about it can
+never be refused by the 422 presence gate — it is the same stemmer, the same
+whole-word contiguous rule. There are tests asserting exactly that.
+
+```console
+$ curl -s -X POST localhost:8000/api/v1/insights \
+    -H 'Content-Type: application/json' \
+    -d '{"reviews":["Battery life is amazing but the screen is dim.",
+                    "The screen is gorgeous and the battery lasts all day."]}'
+{
+  "reviews": 2, "sentences": 2, "predictions": 4,
+  "mixed_sentences": 1,
+  "aspects": [
+    {"aspect": "screen", "source": "corpus", "total": 2, "dominant": "negative",
+     "shares": {"negative": 0.5, "positive": 0.5}, "mixed": true, "examples": [...]},
+    ...
+  ]
+}
+```
+
+Scoring is batched — one forward pass per chunk of 32 pairs, not per pair —
+and the storefront's breakdowns are cached per process, because scoring the
+whole catalogue cold is ~8s of CPU. The UI shows that as a loading state
+rather than hiding it.
+
 ## Frontend
 
-Two screens: analyze a review, and view the served model's metrics.
+Four sections, each a URL fragment: `#analysis` analyses one review,
+`#insights` breaks a pasted review set down by aspect, `#store` is the demo
+storefront, and `#performance` shows the served model's metrics.
 
 ```bash
 cd backend && uvicorn app.main:app --port 8000   # must be up first
@@ -721,10 +811,30 @@ cd ../backend && uvicorn app.main:app --port 8000
 cd ../frontend && npm run dev
 ```
 
+For the demo store, serve the **pooled** artifact: its catalogue holds both
+laptops and restaurants, and a single-domain model would be answering
+off-distribution on half the shelf.
+
+```bash
+cd training && python train.py --config configs/joint.yaml train --prepare
+cd ../backend && ARTIFACT_DIR=training/artifacts/absa-joint-v1 \
+    uvicorn app.main:app --port 8000
+```
+
+The two generated data files the demo surfaces read
+(`backend/app/data/aspect_lexicon.json` and `products.json`) are committed, so
+the store and the insights page work on a fresh clone without the corpus.
+Regenerate them from the corpus with `python training/export_aspect_lexicon.py`
+and `python training/export_demo_catalogue.py`.
+
 ## Tests at a glance
 
 | Suite | Count | Needs an artifact? |
 | --- | --- | --- |
-| `training/tests` | 179 | no — tiny encoder built from config |
-| `backend/tests` | 49 | no — mocked registry |
-| `frontend` | `tsc -b` + oxlint | no |
+| `training/tests` | 181 | no — tiny encoder built from config |
+| `backend/tests` | 198 | no — mocked registry |
+| `frontend` | 376 | no — mocked API client |
+
+755 in all, every one offline and on CPU. The frontend suite is Vitest +
+Testing Library (`npm test`); `npm run build` type-checks it as well, since
+`tsconfig.json` references `tsconfig.test.json`.
