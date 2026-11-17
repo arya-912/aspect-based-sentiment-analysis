@@ -165,3 +165,50 @@ def test_split_rejects_out_of_range_fractions(toy_frame, fraction):
 def test_split_rejects_empty_frame(toy_frame):
     with pytest.raises(ValueError, match="empty"):
         split_train_val(toy_frame.iloc[0:0])
+
+
+# ---- reading the prepared splits back --------------------------------- #
+
+
+#: Aspect terms pandas turns into NaN with its default ``na_values``. "nan"
+#: is a real MAMS aspect (the bread, in "salad, nan and rice"); the rest are
+#: plausible terms that would be read as missing data.
+NA_LIKE_ASPECTS = ["nan", "None", "null", "NA", "N/A"]
+
+
+def test_load_splits_keeps_na_like_aspects_as_text(tmp_path):
+    """``load_splits`` must not let pandas read an aspect term as NaN.
+
+    ``load_raw_csv`` passes ``keep_default_na=False``; the prepared splits are
+    read by a second, independent ``read_csv`` in ``train.py`` that did not,
+    so an aspect in pandas' 19 default NA strings arrived as float NaN. The
+    tokenizer stringifies that back to "nan", which is correct for the bread
+    and wrong for every other one -- silently, with no error anywhere.
+    """
+    import sys
+
+    from src.config import PROJECT_ROOT
+
+    if str(PROJECT_ROOT / "training") not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT / "training"))
+    from train import load_splits
+
+    rows = ["review_id,text,aspect,label,from,to"]
+    for i, aspect in enumerate(NA_LIKE_ASPECTS):
+        text = f"the {aspect} was fine"
+        rows.append(f'{i},"{text}",{aspect},neutral,4,{4 + len(aspect)}')
+    body = "\n".join(rows) + "\n"
+    for name in ("train.csv", "val.csv"):
+        (tmp_path / name).write_text(body, encoding="utf-8")
+
+    cfg = {"paths": {"processed_dir": str(tmp_path)}}
+    train_df, val_df = load_splits(cfg, LabelMap())
+
+    for frame in (train_df, val_df):
+        assert frame["aspect"].isna().sum() == 0
+        assert frame["aspect"].tolist() == NA_LIKE_ASPECTS
+        # the offsets must still slice the aspect out of its own sentence
+        for text, aspect, start, end in zip(
+            frame["text"], frame["aspect"], frame["from"], frame["to"]
+        ):
+            assert text[int(start) : int(end)] == aspect

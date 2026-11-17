@@ -140,9 +140,16 @@ def load_splits(cfg: dict[str, Any], label_map: LabelMap, force_prepare: bool = 
 
     import pandas as pd
 
+    # keep_default_na=False, for the same reason load_raw_csv uses it: pandas
+    # reads 19 strings as NaN by default, and several are real aspect terms.
+    # MAMS_Train.csv has an aspect "nan" -- the Indian bread, in "salad, nan
+    # and rice" -- which comes back as float NaN and is then stringified to
+    # "nan" by the tokenizer, right by luck. An aspect "None", "null" or "NA"
+    # would be silently trained and served as the wrong text.
+    read = dict(dtype={"review_id": str}, keep_default_na=False)
     return (
-        pd.read_csv(train_path, dtype={"review_id": str}),
-        pd.read_csv(val_path, dtype={"review_id": str}),
+        pd.read_csv(train_path, **read),
+        pd.read_csv(val_path, **read),
     )
 
 
