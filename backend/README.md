@@ -45,7 +45,7 @@ Then <http://localhost:8000/docs>.
 The artifact location and device are read from the environment:
 
 ```bash
-ARTIFACT_DIR=training/artifacts/absa-v1 DEVICE=cpu uvicorn app.main:app
+ARTIFACT_DIR=training/artifacts/absa-joint-v1 DEVICE=cpu uvicorn app.main:app
 ```
 
 `ARTIFACT_DIR` is resolved against the **repository root** when relative, so

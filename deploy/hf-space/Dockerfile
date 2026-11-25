@@ -13,7 +13,7 @@ FROM python:3.12-slim
 # without editing this file.
 ARG GIT_REPO=https://github.com/arya-912/aspect-based-sentiment-analysis.git
 ARG GIT_REF=main
-ARG MODEL_REPO=arya912/absa-v1
+ARG MODEL_REPO=arya912/absa-joint-v1
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -53,9 +53,9 @@ WORKDIR /home/user/app
 # would time out the frontend's first request.
 RUN python -c "\
 from huggingface_hub import snapshot_download; \
-snapshot_download(repo_id='${MODEL_REPO}', local_dir='training/artifacts/absa-v1')"
+snapshot_download(repo_id='${MODEL_REPO}', local_dir='training/artifacts/absa-joint-v1')"
 
-ENV ARTIFACT_DIR=training/artifacts/absa-v1 \
+ENV ARTIFACT_DIR=training/artifacts/absa-joint-v1 \
     DEVICE=cpu
 # The weights are in the image, so a load failure means the image itself is
 # broken. Crash on boot and say so in the Space logs rather than serving a

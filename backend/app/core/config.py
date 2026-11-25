@@ -26,7 +26,11 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    ARTIFACT_DIR: str = "training/artifacts/absa-v1"
+    #: The pooled laptop+restaurant model: it beats each specialist on that
+    #: specialist's own gold test set, so one artifact covers both domains
+    #: and the UI reports "Laptop and restaurant reviews". See the README's
+    #: "Two domains, one model".
+    ARTIFACT_DIR: str = "training/artifacts/absa-joint-v1"
     DEVICE: str = "cpu"
 
     API_PREFIX: str = "/api/v1"

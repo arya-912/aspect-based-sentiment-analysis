@@ -5,7 +5,7 @@
 | Piece | Where | State |
 | --- | --- | --- |
 | `frontend/` | Vercel — <https://absa-sentiment.vercel.app> | deployed |
-| `training/artifacts/absa-v1` | Hub — <https://huggingface.co/arya912/absa-v1> | public, 450MB |
+| `training/artifacts/absa-joint-v1` | local; `absa-v1` is on the Hub at <https://huggingface.co/arya912/absa-v1> | served model, 450MB |
 | `backend/` | your machine, exposed by a tunnel when demoing | run on demand |
 
 To demo:
@@ -40,6 +40,34 @@ needs a paid account to run, and `create_repo` returns `402 Payment Required`
 without one.
 
 So the backend runs where the weights already are: locally.
+
+## Which model is served
+
+`Settings.ARTIFACT_DIR` defaults to `training/artifacts/absa-joint-v1`, the
+pooled laptop+restaurant model. It beats each specialist on that specialist's
+own gold test set, so one backend covers both domains; the UI reads `corpus`
+from `GET /model`, sees the `Joint_Train` stem, and says "Laptop and
+restaurant reviews" with examples from both. See the README's
+[Two domains, one model](../README.md#two-domains-one-model).
+
+Note that `metrics.json` is scored on whatever test set the run used, so the
+headline numbers are not comparable across artifacts: `absa-v1`'s are the 638
+laptop rows, `absa-joint-v1`'s the 1,758 pooled rows. The per-domain
+comparison in the README is the one to quote.
+
+Serve a different artifact without editing anything:
+
+```sh
+ARTIFACT_DIR=training/artifacts/absa-rest-v1 uvicorn app.main:app
+```
+
+Only `absa-v1` is on the Hub. If you ever use the container in
+`deploy/hf-space/`, push the joint weights first -- its `MODEL_REPO` now
+points at `arya912/absa-joint-v1`:
+
+```sh
+.venv/bin/hf upload arya912/absa-joint-v1 training/artifacts/absa-joint-v1 . --repo-type=model
+```
 
 ## The `?api=` override
 
