@@ -1,0 +1,16 @@
+# Only frontend/ is built (the project's Root Directory), so nothing else
+# needs to be uploaded. The CLI does not reliably apply .gitignore to the
+# upload, and this repo holds ~3.7GB it would otherwise try to send: five
+# ~430MB model checkpoints under training/artifacts and the torch libraries
+# in .venv. Either one trips Vercel's 100MB-per-file limit.
+.venv
+training
+backend
+.pytest_cache
+.github
+*.pdf
+VIDEO_SCRIPT*.md
+
+# Build outputs and dependencies are produced on Vercel, not shipped to it.
+node_modules
+dist

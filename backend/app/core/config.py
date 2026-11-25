@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 #: Repository root: this file is <root>/backend/app/core/config.py.
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -30,10 +33,23 @@ class Settings(BaseSettings):
     TITLE: str = "ABSA API"
     VERSION: str = "0.1.0"
 
-    #: Browser origins allowed to call the API (the Vite and CRA dev servers).
-    CORS_ORIGINS: tuple[str, ...] = (
+    #: Browser origins allowed to call the API: the Vite and CRA dev servers,
+    #: plus the deployed frontend.
+    #:
+    #: The Vercel origin is a default rather than something the operator must
+    #: remember to set, because the deployed page is served over HTTPS and
+    #: talks to this service on localhost -- browsers permit that particular
+    #: mixed-content case, so `uvicorn app.main:app` with no environment at
+    #: all is enough to drive the live site from a laptop. Override the whole
+    #: tuple from the environment to allow a different frontend.
+    #:
+    #: ``NoDecode`` so the raw environment string reaches the validator below:
+    #: pydantic-settings JSON-decodes a complex field *before* validation, and
+    #: would reject a comma-separated value without ever calling it.
+    CORS_ORIGINS: Annotated[tuple[str, ...], NoDecode] = (
         "http://localhost:5173",
         "http://localhost:3000",
+        "https://absa-sentiment.vercel.app",
     )
 
     #: Refuse a /predict whose aspect does not occur in the review text.
@@ -47,6 +63,32 @@ class Settings(BaseSettings):
     #: lets the service boot and report "degraded" on /health instead, so an
     #: orchestrator can surface the problem rather than crash-looping.
     ALLOW_DEGRADED_START: bool = True
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def _split_origins(cls, value: object) -> object:
+        """Parse the raw ``CORS_ORIGINS`` environment string.
+
+        Both forms are accepted::
+
+            CORS_ORIGINS=https://absa.vercel.app,http://localhost:5173
+            CORS_ORIGINS=["https://absa.vercel.app"]
+
+        The comma form is what someone pasting two URLs into a hosting
+        dashboard will actually write; the JSON form is what plain
+        pydantic-settings would have required, kept so an existing
+        deployment's value kept working. Blank entries are dropped, so a
+        trailing comma is harmless.
+
+        Because the field is annotated ``NoDecode``, this receives the
+        untouched string and is the only thing that parses it.
+        """
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if text.startswith("["):
+            return json.loads(text)
+        return tuple(part.strip() for part in text.split(",") if part.strip())
 
     @property
     def artifact_path(self) -> Path:

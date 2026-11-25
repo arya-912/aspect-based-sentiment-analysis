@@ -10,10 +10,73 @@ import type {
   PredictResponse,
 } from '../types'
 
-/** Falls back to the port `uvicorn app.main:app` serves on by default. */
-export const BASE_URL: string = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
-
 const API_PREFIX = '/api/v1'
+
+/** Where a runtime override of the API origin is remembered between visits. */
+const OVERRIDE_KEY = 'absa.apiUrl'
+
+/** True for a string that parses as an http(s) URL. */
+function isHttpUrl(value: string): boolean {
+  try {
+    const { protocol } = new URL(value)
+    return protocol === 'http:' || protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * A valid API origin supplied at runtime, or `null`.
+ *
+ * `?api=<url>` wins and is remembered, so a reload or an in-app navigation
+ * keeps working once the parameter is gone; `?api=` with no value forgets it.
+ * Anything that is not an http(s) URL is ignored rather than thrown, because
+ * a typo in a pasted URL should leave the build-time default in place instead
+ * of breaking the page.
+ */
+function readOverride(): string | null {
+  if (typeof window === 'undefined') return null
+
+  let candidate: string | null = null
+  try {
+    const fromQuery = new URLSearchParams(window.location.search).get('api')
+    if (fromQuery === null) {
+      candidate = window.localStorage.getItem(OVERRIDE_KEY)
+    } else {
+      candidate = fromQuery.trim()
+      if (candidate) window.localStorage.setItem(OVERRIDE_KEY, candidate)
+      else window.localStorage.removeItem(OVERRIDE_KEY)
+    }
+  } catch {
+    // Storage is unavailable in some private-browsing modes. Reading the
+    // query parameter still works, so fall back to it rather than give up.
+    try {
+      candidate = new URLSearchParams(window.location.search).get('api')
+    } catch {
+      return null
+    }
+  }
+
+  if (!candidate || !isHttpUrl(candidate)) return null
+  return candidate.replace(/\/+$/, '')
+}
+
+/**
+ * The API's origin.
+ *
+ * Resolution order: a runtime override (see {@link readOverride}), then the
+ * value compiled in by Vite, then the port `uvicorn app.main:app` serves on.
+ *
+ * The override exists because the deployed frontend points at a backend run
+ * from a laptop through an ephemeral tunnel, whose hostname changes on every
+ * restart. `VITE_API_URL` is substituted at *build* time, so without a
+ * runtime path the site would have to be rebuilt and redeployed before each
+ * demo. Note the trade-off: anyone can aim the deployed page at a host of
+ * their choosing via `?api=`, so treat it as a demo affordance, not a
+ * trusted setting.
+ */
+export const BASE_URL: string =
+  readOverride() ?? import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
 /**
  * A failed request, thrown by every function in this module.

@@ -1,0 +1,20 @@
+# Pinned to the versions recorded in the artifact's own config.json
+# ("library_versions"). A transformers or torch drift rebuilds the backbone
+# slightly differently and the saved state_dict stops matching, which surfaces
+# as an unhelpful size-mismatch error at load. torch itself is installed in
+# the Dockerfile, from the CPU wheel index.
+transformers==5.19.0
+
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.6.0
+pydantic-settings>=2.7.0
+
+# Not used to serve a request, but the inference path imports
+# training.src.data.dataset (for LabelMap) and training.src.config, which
+# import pandas and yaml at module scope.
+pandas>=2.0.0
+pyyaml>=6.0
+
+# Pulls the artifact in the Dockerfile's download step.
+huggingface_hub>=0.23.0

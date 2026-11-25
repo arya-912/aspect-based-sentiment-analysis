@@ -1,7 +1,9 @@
 fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 pydantic>=2.6.0
-pydantic-settings>=2.2.0
+# >=2.7.0 for NoDecode, which core/config.py uses to parse CORS_ORIGINS
+# from a plain comma-separated environment variable.
+pydantic-settings>=2.7.0
 
 # torch / transformers / pandas come from the training requirements and are
 # already present in the project venv; the backend imports the trained model
