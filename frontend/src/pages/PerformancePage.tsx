@@ -2,8 +2,11 @@ import { useEffect, useState } from 'react'
 
 import Card from '../components/Card'
 import ConfusionMatrix from '../components/ConfusionMatrix'
+import EmptyState from '../components/EmptyState'
 import MetricTile from '../components/MetricTile'
 import PerClassTable from '../components/PerClassTable'
+import SectionHeader from '../components/SectionHeader'
+import SentimentLegend from '../components/SentimentLegend'
 import { OfflineIcon } from '../components/icons'
 import { asCount, asPercent } from '../lib/format'
 import { getModelMeta, isApiError } from '../services/api'
@@ -66,23 +69,25 @@ export default function PerformancePage() {
 
   if (error !== null) {
     return (
-      <Card
-        role="alert"
-        className="flex gap-3 border-critical/40 bg-critical/10 p-4 text-sm"
-      >
-        <span className="mt-0.5 text-critical">
-          <OfflineIcon />
-        </span>
-        <div>
-          <p className="font-medium text-ink">Could not load model performance</p>
-          <p className="mt-1 text-ink-2">{error}</p>
-        </div>
-      </Card>
+      <div role="alert">
+        <EmptyState
+          title="Could not load model performance"
+          tone="critical"
+          icon={<OfflineIcon />}
+        >
+          {error}
+        </EmptyState>
+      </div>
     )
   }
 
   if (meta === null) {
-    return <p className="text-sm text-ink-2">No model metadata available.</p>
+    return (
+      <EmptyState title="No model metadata available">
+        The server answered, but without the fields this page reads. Check that
+        an artifact is loaded.
+      </EmptyState>
+    )
   }
 
   const { evaluation } = meta
@@ -97,14 +102,20 @@ export default function PerformancePage() {
 
   return (
     <div className="space-y-6">
-      <section>
-        <h2 className="text-base font-semibold text-ink">Model performance</h2>
-        <p className="mt-1 text-sm text-ink-2">
-          Scores from the artifact&rsquo;s held-out evaluation
-          {split === undefined ? '' : ' '}
-          {split !== undefined && <span className="font-mono text-xs">({split})</span>}.
-        </p>
-      </section>
+      <SectionHeader
+        as="h2"
+        title="Model performance"
+        description={
+          <>
+            Scores from the artifact&rsquo;s held-out evaluation
+            {split === undefined ? '' : ' '}
+            {split !== undefined && (
+              <span className="font-mono text-xs">({split})</span>
+            )}
+            . Served exactly as the artifact recorded them.
+          </>
+        }
+      />
 
       {/*
         Macro F1 leads, and is the emphasized figure. It is the metric this
@@ -128,9 +139,7 @@ export default function PerformancePage() {
       </div>
 
       <Card className="p-5">
-        <p className="text-xs font-medium uppercase tracking-wide text-muted">
-          Serving
-        </p>
+        <SectionHeader title="Serving" />
         <dl className="mt-3 grid gap-4 text-sm sm:grid-cols-3">
           <div>
             <dt className="text-muted">Artifact</dt>
@@ -148,27 +157,33 @@ export default function PerformancePage() {
       </Card>
 
       {evaluation === null ? (
-        <Card className="p-5">
-          <p className="text-sm text-ink-2">
-            This artifact ships without an evaluation report, so per-class scores are
-            unavailable.
-          </p>
-        </Card>
+        <EmptyState title="This artifact ships without an evaluation report">
+          Per-class scores and the confusion matrix come from the artifact&rsquo;s
+          own <span className="font-mono">metrics.json</span>. Run{' '}
+          <span className="font-mono">python train.py evaluate</span> to produce one.
+        </EmptyState>
       ) : (
         <>
           <Card className="p-5">
-            <h3 className="mb-4 text-sm font-semibold text-ink">Per-class scores</h3>
-            <PerClassTable perClass={perClass} />
+            <SectionHeader
+              title="Per-class scores"
+              description="neutral is the weakest class in every run here, and the one macro F1 exists to keep visible."
+              aside={<SentimentLegend />}
+            />
+            <div className="mt-4">
+              <PerClassTable perClass={perClass} />
+            </div>
           </Card>
 
           {evaluation.confusion_matrix !== undefined && (
             <Card className="p-5">
-              <h3 className="text-sm font-semibold text-ink">Where the errors go</h3>
-              <p className="mt-1 mb-4 text-sm text-ink-2">
-                Accuracy says how often the model is wrong. This says what it is wrong
-                about.
-              </p>
-              <ConfusionMatrix matrix={evaluation.confusion_matrix} />
+              <SectionHeader
+                title="Where the errors go"
+                description="Accuracy says how often the model is wrong. This says what it is wrong about."
+              />
+              <div className="mt-4">
+                <ConfusionMatrix matrix={evaluation.confusion_matrix} />
+              </div>
             </Card>
           )}
         </>

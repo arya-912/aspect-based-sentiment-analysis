@@ -1,6 +1,8 @@
 import { useState } from 'react'
 
 import Card from '../components/Card'
+import EmptyState from '../components/EmptyState'
+import SectionHeader from '../components/SectionHeader'
 import ResultCard from '../components/ResultCard'
 import ReviewForm from '../components/ReviewForm'
 import SentimentBadge from '../components/SentimentBadge'
@@ -73,12 +75,12 @@ export default function AnalysisPage({ examples }: AnalysisPageProps) {
       */}
       <div className="lg:col-span-2">
         <Card className="p-5 lg:sticky lg:top-24">
-          <h2 className="text-base font-semibold text-ink">Analyze a review</h2>
-          <p className="mt-1 mb-5 text-sm text-ink-2">
-            Enter a sentence and an aspect term inside it. The model judges that aspect
-            specifically — so the same sentence can be positive about one and negative
-            about another.
-          </p>
+          <SectionHeader
+            as="h2"
+            title="Analyze a review"
+            description="Enter a sentence and an aspect term inside it. The model judges that aspect specifically — so the same sentence can be positive about one and negative about another."
+          />
+          <div className="mt-5" />
           <ReviewForm
             onResult={handleResult}
             onLoadingChange={setLoading}
@@ -89,16 +91,11 @@ export default function AnalysisPage({ examples }: AnalysisPageProps) {
 
       <div className="space-y-4 lg:col-span-3">
         {session === null ? (
-          <Card className="p-8 text-center">
-            <p className="text-sm font-medium text-ink">
-              {loading ? 'Analyzing…' : 'No predictions yet'}
-            </p>
-            <p className="mx-auto mt-2 max-w-sm text-sm text-ink-2">
-              {loading
-                ? 'Running the review through the model.'
-                : 'Pick one of the examples, or write a review and click a word in it to choose the aspect. Analyze several aspects of the same sentence to see them compared.'}
-            </p>
-          </Card>
+          <EmptyState title={loading ? 'Analyzing…' : 'No predictions yet'}>
+            {loading
+              ? 'Running the review through the model.'
+              : 'Pick one of the examples, or write a review and click a word in it to choose the aspect. Analyze several aspects of the same sentence to see them compared.'}
+          </EmptyState>
         ) : (
           <>
             <div className="flex items-start justify-between gap-4">
