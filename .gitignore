@@ -36,6 +36,9 @@ PROJECT_CONTEXT.md
 # Local command cheat sheet, not for the repo
 COMMANDS.md
 
+# Demo-video prep, local only (and already excluded from the Vercel upload)
+VIDEO_SCRIPT*.md
+
 ABSA_Viva_Guide.pdf
 .vercel
 .env*
