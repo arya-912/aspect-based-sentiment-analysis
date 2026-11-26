@@ -1,0 +1,65 @@
+# The API as a container image, built and run by Vercel Functions.
+#
+# Vercel detects `Dockerfile.vercel` at the project root, builds it, pushes it
+# to the Vercel Container Registry and routes all traffic to it. This is the
+# second shape tried here. A plain Python function is the better fit on paper
+# and the code for it is still in place (`server.py`, `requirements.txt`), but
+# its bundle is ~1.5GB: torch's shared libraries are 454MB and the artifact is
+# another 430MB. The large-functions beta is supposed to raise the ceiling
+# from 250MB to 5GB, and the build does opt in --
+#
+#   Function "server.py" exceeds the standard size limit; enabling large
+#   functions (beta).
+#
+# -- but the deployment is then refused anyway, with
+# NOW_SANDBOX_WORKER_MAX_LAMBDA_SIZE at 250MB. An image is not subject to that
+# limit; the registry's is 15GB.
+#
+# `deploy/hf-space/Dockerfile` is the same idea for a Hugging Face Space, and
+# is kept separate rather than shared: that one clones this repository from
+# GitHub, because a Space's own repo holds nothing but three files, while here
+# the build context *is* the repository.
+
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# requirements.txt already pins torch==2.14.1+cpu against the PyTorch CPU
+# index, so a plain install cannot pick up the CUDA build. uvicorn is not in
+# that file because a Vercel *function* is served by the platform's own ASGI
+# host; a container has to run its own, so it is installed here.
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt 'uvicorn[standard]>=0.29.0'
+
+# Only what serving a request needs: the API, the two training packages its
+# inference path imports, and the fetcher the next layer runs.
+COPY backend/ backend/
+COPY training/src/ training/src/
+COPY training/configs/ training/configs/
+COPY deploy/vercel/fetch_artifact.py deploy/vercel/
+COPY server.py ./
+
+# The weights are gitignored, so they come from the Hub rather than the build
+# context. Baked into the image rather than fetched at boot: the function
+# scales to zero and cold-starts often, and pulling 450MB on every wake would
+# time out the frontend's first request. HF_HOME has to be somewhere writable
+# both here and at runtime, where only /tmp is.
+ENV HF_HOME=/tmp/huggingface
+RUN python deploy/vercel/fetch_artifact.py
+
+ENV ARTIFACT_DIR=training/artifacts/absa-joint-v1 \
+    DEVICE=cpu
+# The weights are in the image, so a load failure means the image itself is
+# broken. Crash on boot and say so in the logs rather than serving a
+# "degraded" /health that reads like a transient problem.
+ENV ALLOW_DEGRADED_START=false
+
+# Vercel routes to port 80 unless PORT is set in the project's settings. The
+# shell form is deliberate: ${PORT:-80} has to be expanded at boot, not fixed
+# when the image is built.
+EXPOSE 80
+CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port ${PORT:-80}"]

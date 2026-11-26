@@ -1,0 +1,46 @@
+# Dependencies for the Vercel deployment of the API, installed from the
+# repository root -- which is the Root Directory of the `absa-api` project.
+# See deploy/vercel/README.md.
+#
+# Not the list to install for local development: `backend/requirements.txt`
+# and `training/requirements.txt` are still the ones to use there. This file
+# is the union of both, minus everything only training needs, and with every
+# version that the artifact was built against pinned exactly.
+
+# The default index serves the CUDA build of torch: ~2.5GB of nvidia-*
+# wheels that a Vercel function can never use, and enough on its own to blow
+# past the bundle limit. The `+cpu` local version exists only on the index
+# below, so this pin cannot silently resolve to the CUDA wheel.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.1+cpu
+
+# Pinned to the versions recorded in the artifact's own config.json
+# ("library_versions"). A transformers or torch drift rebuilds the backbone
+# slightly differently and the saved state_dict stops matching, which
+# surfaces as an unhelpful size-mismatch error at load.
+transformers==5.19.0
+
+fastapi>=0.110.0
+pydantic>=2.6.0
+# >=2.7.0 for NoDecode, which backend/app/core/config.py uses to parse
+# CORS_ORIGINS from a plain comma-separated environment variable.
+pydantic-settings>=2.7.0
+
+# No uvicorn: Vercel imports `server:app` and serves the ASGI app itself.
+
+# Not used to serve a request, but the inference path imports
+# training.src.data.dataset (for LabelMap) and training.src.config, which
+# import pandas and yaml at module scope.
+pandas>=2.0.0
+pyyaml>=6.0
+
+# Not used to serve a request either, but unavoidable: importing
+# training.src.artifact executes training/src/__init__.py, which re-exports
+# the whole training package -- including training.src.evaluation, which
+# imports sklearn.metrics at module scope. It is in the local venv through
+# training/requirements.txt, so this only shows up in a deployment, as a
+# ModuleNotFoundError at the first model load.
+scikit-learn>=1.3.0
+
+# Pulls the artifact in the build step (deploy/vercel/fetch_artifact.py).
+huggingface_hub>=0.23.0
