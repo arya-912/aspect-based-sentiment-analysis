@@ -126,12 +126,9 @@ A tunnel hostname does **not** need adding here. CORS is enforced on the
 
 ## Redeploying
 
-Pushing to `main` redeploys `absa-sentiment`: the GitHub repo is connected to
-it and `main` is the production branch.
-
-`absa-api` is **not** connected to the repo, so it only deploys when asked to.
-Run `vercel git connect` once `main` carries `Dockerfile.vercel` and it will
-behave like the other one; until then, and after any change to the image:
+Pushing to `main` redeploys **both** projects: the GitHub repo is connected to
+each and `main` is the production branch. Any other branch builds a preview of
+each. To deploy without a commit:
 
 ```sh
 vercel deploy --prod

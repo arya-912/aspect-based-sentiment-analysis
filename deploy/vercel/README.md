@@ -136,28 +136,20 @@ failed the same way on its first boot.
 
 ## Keeping it in step with the code
 
-This project was created with `vercel link` rather than a Git import, so it
-has **no Git connection yet**: a push to `main` does not redeploy it. Deploys
-are explicit, from the repository root:
+A push to `main` redeploys. `vercel link` connected the GitHub repository when
+it created the project, so this behaves like `absa-sentiment`: `main` builds
+production, any other branch builds a preview. `vercel deploy --prod` from the
+repository root does the same thing without a commit.
 
-```sh
-vercel deploy --prod
-```
+The build re-pulls the artifact from the Hub, so a deployment carries the
+current state of both the code and the weights. To serve different weights,
+change `MODEL_REPO` in the project's environment variables and redeploy.
 
-Connect it once `main` actually carries `Dockerfile.vercel`:
-
-```sh
-vercel git connect
-```
-
-Not before. A connected project rebuilds from `main` on every push, and a
-`main` without a Dockerfile deploys as static files — the API would answer 404
-on every route with nothing in the build log to say why.
-
-Either way the build re-pulls the artifact from the Hub, so a deployment
-carries the current state of both the code and the weights. To serve different
-weights, change `MODEL_REPO` in the project's environment variables and
-redeploy.
+One consequence worth knowing: because the framework preset is Container and
+the whole repository is the build context, a commit that moves or renames
+`Dockerfile.vercel` deploys the repository as **static files** instead of
+failing. Every route then answers 404, and the build log says nothing beyond
+"Downloading N deployment files".
 
 `deploy/hf-space/` is the same container shaped for a Hugging Face Space. It
 is kept separate because it clones the repository from GitHub (a Space's own
