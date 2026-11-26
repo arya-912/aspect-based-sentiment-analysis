@@ -16,5 +16,13 @@ pydantic-settings>=2.7.0
 pandas>=2.0.0
 pyyaml>=6.0
 
+# Not used to serve a request either, but unavoidable: importing
+# training.src.artifact executes training/src/__init__.py, which re-exports
+# the whole training package -- including training.src.evaluation, which
+# imports sklearn.metrics at module scope. It is in the local venv through
+# training/requirements.txt, so this only shows up in a deployment, as a
+# ModuleNotFoundError at the first model load.
+scikit-learn>=1.3.0
+
 # Pulls the artifact in the Dockerfile's download step.
 huggingface_hub>=0.23.0

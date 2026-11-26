@@ -4,42 +4,47 @@
 
 | Piece | Where | State |
 | --- | --- | --- |
-| `frontend/` | Vercel — <https://absa-sentiment.vercel.app> | deployed |
-| `training/artifacts/absa-joint-v1` | local; `absa-v1` is on the Hub at <https://huggingface.co/arya912/absa-v1> | served model, 450MB |
-| `backend/` | your machine, exposed by a tunnel when demoing | run on demand |
+| `frontend/` | Vercel, project `absa-sentiment` — <https://absa-sentiment.vercel.app> | deployed |
+| `backend/` | Vercel, project `absa-api` — <https://absa-api-pravesh-aryas-projects.vercel.app> | deployed, see [deploy/vercel](vercel/README.md) |
+| `training/artifacts/absa-joint-v1` | the Hub at <https://huggingface.co/arya912/absa-joint-v1>, pulled into the API's image at build time | served model, 450MB |
 
-To demo:
+Both halves are hosted, so there is nothing to start before a demo. The one
+thing to know is the cold start: the API scales to zero after five idle
+minutes, and the instance that answers the next request has to load 450MB of
+weights first -- about 12 seconds. Open
+<https://absa-api-pravesh-aryas-projects.vercel.app/api/v1/health> a minute
+before you present.
 
-```sh
-./deploy/demo.sh
-```
+`./deploy/demo.sh` still works and is still the fallback: it boots the API
+locally, opens a Cloudflare quick tunnel, and prints a
+`https://absa-sentiment.vercel.app/?api=https://<random>.trycloudflare.com`
+link that points the deployed UI at your machine. Reach for it if a
+deployment is broken mid-demo, or to show a model that is not the deployed
+one.
 
-It boots the API, opens a Cloudflare quick tunnel, waits for both to answer,
-and prints a link like
+## How the backend is hosted
 
-```
-https://absa-sentiment.vercel.app/?api=https://<random>.trycloudflare.com
-```
+A container image on Vercel: `Dockerfile.vercel` at the repository root, built
+by Vercel and served by Vercel Functions, with the artifact pulled from the
+Hub into the image at build time. The setup, the environment variables and the
+numbers behind it are in [deploy/vercel/README.md](vercel/README.md).
 
-Open that and the deployed UI talks to your machine. Ctrl-C stops both.
+This used to say the backend could not be hosted. One of the two walls it
+described has moved:
 
-## Why the backend is not hosted
+**Vercel.** The blocker was a 250MB unzipped function with no persistent disk,
+which torch alone overran. That is still the limit a *function* gets here: the
+bundle is ~1.5GB, and although the build opts into the large-functions beta
+that is meant to allow 5GB, the deployment is refused at 250MB anyway. What
+does work is a container, which goes through the Container Registry instead --
+15GB -- and holds the same FastAPI app. A Hobby function gets 2GB of memory
+and peak usage while loading is ~1.3GB, which is the figure to watch if the
+artifact ever grows.
 
-Two separate walls, in the order they were hit.
-
-**Vercel.** A serverless function is capped at 250MB unzipped with no
-persistent disk. The CPU build of torch is ~200MB installed and `model.pt` is
-another 450MB, so the function is over the cap before any of our code counts,
-and there is nowhere to keep weights a cold start could reuse. No
-configuration changes this.
-
-**Hugging Face Spaces.** A Docker Space would fit comfortably, but Spaces
-running on compute now require PRO ($9/mo) — free accounts can only create
-*static* Spaces. The container is written and ready in `deploy/hf-space/`; it
-needs a paid account to run, and `create_repo` returns `402 Payment Required`
-without one.
-
-So the backend runs where the weights already are: locally.
+**Hugging Face Spaces.** Unchanged: a Space that runs compute still needs PRO,
+and `create_repo` returns `402 Payment Required` without it. The container in
+`deploy/hf-space/` is written and ready for the day that is worth $9/mo, or
+for any other host that runs containers.
 
 ## Which model is served
 
@@ -61,13 +66,17 @@ Serve a different artifact without editing anything:
 ARTIFACT_DIR=training/artifacts/absa-rest-v1 uvicorn app.main:app
 ```
 
-Only `absa-v1` is on the Hub. If you ever use the container in
-`deploy/hf-space/`, push the joint weights first -- its `MODEL_REPO` now
-points at `arya912/absa-joint-v1`:
+`absa-joint-v1` and `absa-v1` are both on the Hub. The deployed API pulls
+`arya912/absa-joint-v1`, so a retrained artifact has to be pushed there before
+a redeploy can serve it:
 
 ```sh
 .venv/bin/hf upload arya912/absa-joint-v1 training/artifacts/absa-joint-v1 . --repo-type=model
 ```
+
+To serve a different repo without touching the code, set `MODEL_REPO` (and
+`ARTIFACT_DIR`, which the build script and the service read from the same
+variable) in the `absa-api` project's environment variables.
 
 ## The `?api=` override
 
@@ -85,12 +94,13 @@ runtime, in this order:
 Non-http(s) values are ignored rather than thrown, so a mistyped URL leaves
 the previous default in place instead of breaking the page.
 
-Because step 3 is the deployed default and the backend's CORS list carries the
-Vercel origin, **no tunnel is needed when you demo from this machine**: open
-the deployed site, run `uvicorn app.main:app`, and the HTTPS page will call
-`http://localhost:8000` directly. Browsers allow that particular
-mixed-content case because localhost counts as a trustworthy origin. The
-tunnel is only for reaching the API from someone else's device.
+Step 2 is now the deployed API, so the live site needs no parameter at all.
+The override earns its keep in the other direction: append
+`?api=http://localhost:8000` and the deployed page talks to a backend on this
+machine instead. Browsers allow that particular mixed-content case because
+localhost counts as a trustworthy origin, and the backend's CORS list carries
+the Vercel origin, so nothing else has to be configured. A tunnel is only for
+reaching a local API from someone else's device.
 
 The trade-off worth knowing: anyone can point the deployed page at a host of
 their choosing with `?api=`. That is fine for a demo, and is the reason the
@@ -114,24 +124,35 @@ without the validator ever seeing it. That needs pydantic-settings >= 2.7.0.
 A tunnel hostname does **not** need adding here. CORS is enforced on the
 `Origin` header, which is the frontend's origin, not the API's.
 
-## Redeploying the frontend
+## Redeploying
 
-The Vercel project is linked at the repo root with Root Directory
-`frontend`, so deploy from the root, not from inside `frontend/`:
+Pushing to `main` redeploys `absa-sentiment`: the GitHub repo is connected to
+it and `main` is the production branch.
+
+`absa-api` is **not** connected to the repo, so it only deploys when asked to.
+Run `vercel git connect` once `main` carries `Dockerfile.vercel` and it will
+behave like the other one; until then, and after any change to the image:
 
 ```sh
-npx vercel deploy --prod
+vercel deploy --prod
 ```
 
-Pushing to `main` also deploys, since the GitHub repo is connected and
-`main` is the production branch. `.vercelignore` keeps `.venv` and
-`training/` out of the upload — together ~3.7GB, and either of the five
-`model.pt` files alone exceeds Vercel's 100MB per-file limit.
+Mind which project the directory is linked to. `.vercel/project.json` holds
+one link per directory, the repository root is `absa-api`'s Root Directory as
+well as the place `absa-sentiment` is linked from, and `vercel deploy` sends
+whichever of the two the link names. Run `vercel link` if you are not sure.
 
-## If you ever want it always-on
+`.vercelignore` keeps `.venv`, `training/artifacts` and `training/data` out of
+the upload — together ~3.7GB, and any one of the five `model.pt` files exceeds
+Vercel's 100MB per-file limit. It must *not* exclude `backend/` or `training/`
+as it once did: the API's image is built from them.
 
-`deploy/hf-space/` is a working Docker container for the API: it clones this
-repo and pulls the weights from the Hub at build time, so it carries no code
-of its own. It needs a host that runs containers — HF Spaces with PRO, Google
-Cloud Run, Fly.io, or similar. For a non-HF host, change `EXPOSE`/`--port`
-from 7860 to whatever that platform expects, and set `CORS_ORIGINS` there.
+## Moving the API somewhere else
+
+`deploy/hf-space/` is a Docker container for the API: it clones this repo and
+pulls the weights from the Hub at build time, so it carries no code of its
+own. It is the way off Vercel if the function's cold start or its 2GB of
+memory ever stops being enough — HF Spaces with PRO, Google Cloud Run,
+Fly.io, or anything else that runs containers. For a non-HF host, change
+`EXPOSE`/`--port` from 7860 to whatever that platform expects, and set
+`CORS_ORIGINS` there.

@@ -136,8 +136,26 @@ failed the same way on its first boot.
 
 ## Keeping it in step with the code
 
-A push to `main` redeploys, and the build re-pulls the artifact from the Hub,
-so a deployment always carries the current state of both. To serve different
+This project was created with `vercel link` rather than a Git import, so it
+has **no Git connection yet**: a push to `main` does not redeploy it. Deploys
+are explicit, from the repository root:
+
+```sh
+vercel deploy --prod
+```
+
+Connect it once `main` actually carries `Dockerfile.vercel`:
+
+```sh
+vercel git connect
+```
+
+Not before. A connected project rebuilds from `main` on every push, and a
+`main` without a Dockerfile deploys as static files — the API would answer 404
+on every route with nothing in the build log to say why.
+
+Either way the build re-pulls the artifact from the Hub, so a deployment
+carries the current state of both the code and the weights. To serve different
 weights, change `MODEL_REPO` in the project's environment variables and
 redeploy.
 

@@ -1,13 +1,28 @@
-# Only frontend/ is built (the project's Root Directory), so nothing else
-# needs to be uploaded. The CLI does not reliably apply .gitignore to the
-# upload, and this repo holds ~3.7GB it would otherwise try to send: five
-# ~430MB model checkpoints under training/artifacts and the torch libraries
-# in .venv. Either one trips Vercel's 100MB-per-file limit.
+# Applies to a deployment made from this directory. Two projects are built
+# out of this repository:
+#
+#   absa-sentiment   Root Directory frontend/   the UI
+#   absa-api         Root Directory .           the API (see deploy/vercel/)
+#
+# so this list can only hold what *neither* of them needs. backend/ and
+# training/ were listed here while the frontend was the only project. They
+# cannot be now: the API's image is built from them, and excluding them makes
+# the Docker build fail on `COPY backend/ backend/` with nothing uploaded to
+# copy.
+#
+# Everything below is gitignored too, so a Git deployment never sees it. The
+# list is for `vercel deploy` from a working tree, which does not reliably
+# apply .gitignore to the upload and would otherwise try to send the ~3.7GB
+# this directory holds: five ~430MB checkpoints under training/artifacts and
+# the torch libraries in .venv. Either one trips the 100MB-per-file limit.
+#
+# Excluding training/artifacts does not starve the API of its weights: the
+# image pulls them from the Hub at build time
+# (deploy/vercel/fetch_artifact.py), after the upload this list filters.
 .venv
-training
-backend
+training/artifacts
+training/data
 .pytest_cache
-.github
 *.pdf
 VIDEO_SCRIPT*.md
 
